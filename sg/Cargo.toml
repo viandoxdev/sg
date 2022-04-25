@@ -1,0 +1,17 @@
+[package]
+name = "sg"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ecs = { path = "../ecs" }
+uuid = {version = "1.0.0", features = ["v4", "fast-rng"]}
+log = "0.4.16"
+pretty_env_logger = "0.4.0"
+anyhow = "1.0.57"
+wgpu = "0.12"
+winit = "0.26"
+pollster = "0.2.5"
