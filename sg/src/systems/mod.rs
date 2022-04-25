@@ -4,7 +4,7 @@ use winit::window::Window;
 use crate::components::PositionComponent;
 
 pub struct GravitySystem {
-    g: f64
+    pub g: f64
 }
 
 impl System for GravitySystem {

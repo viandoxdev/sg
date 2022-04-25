@@ -1,12 +1,10 @@
 #![feature(proc_macro_diagnostic)]
 #![feature(proc_macro_span_shrink)]
 
-use std::fmt::format;
-
 use proc_macro::TokenStream;
-use quote::{quote, ToTokens};
+use quote::quote;
 use syn::spanned::Spanned;
-use syn::{parse_macro_input, FnArg, ItemFn, PatType, Type};
+use syn::{parse_macro_input, FnArg, ItemFn, PatType};
 
 #[proc_macro_attribute]
 pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
@@ -51,7 +49,7 @@ pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
         let block = *fnc.block;
 
         return quote! {
-            fn __pass(&mut self, __components: &mut ::std::collections::HashMap<::std::any::TypeId, ::std::collections::HashMap<uuid::Uuid, Box<dyn ecs::Component>>>) {
+            fn pass(&mut self, __components: &mut ::std::collections::HashMap<::std::any::TypeId, ::std::collections::HashMap<uuid::Uuid, Box<dyn ecs::Component>>>) {
                 let __reqs: ::std::collections::HashSet::<::std::any::TypeId> =
                     ::std::collections::HashSet::from_iter([#(#types),*].into_iter());
                 let mut __comps = __components.iter()
@@ -64,14 +62,6 @@ pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
                     #(#lets)*
                     #block;
                 }
-            }
-            fn pass(
-                components: &mut ::std::collections::HashMap<::std::any::TypeId, ::std::collections::HashMap<uuid::Uuid, Box<dyn ecs::Component>>>,
-                systems: &mut ::std::collections::HashMap<::std::any::TypeId, Box<dyn ecs::System>>
-            ) {
-                let sys = systems.get_mut(&::std::any::TypeId::of::<Self>()).expect("System isn't part of ECS");
-                let sys = ((&mut **sys) as &mut dyn ::std::any::Any).downcast_mut::<Self>().expect("Couldn't downcast system data struct");
-                sys.__pass(components);
             }
         }.into();
     } else if &name_str == "pass_many" {
@@ -104,7 +94,7 @@ pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
                     let block = *fnc.block;
 
                     return quote! {
-                        fn __pass(&mut self, __components: &mut ::std::collections::HashMap<::std::any::TypeId, ::std::collections::HashMap<uuid::Uuid, Box<dyn ecs::Component>>>) {
+                        fn pass(&mut self, __components: &mut ::std::collections::HashMap<::std::any::TypeId, ::std::collections::HashMap<uuid::Uuid, Box<dyn ecs::Component>>>) {
                             let __reqs: ::std::collections::HashSet::<::std::any::TypeId> =
                                 ::std::collections::HashSet::from_iter([#(#types),*].into_iter());
                             let mut __comps = __components.iter()
@@ -125,14 +115,6 @@ pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
                                 );
                             }
                             #block;
-                        }
-                        fn pass(
-                            components: &mut ::std::collections::HashMap<::std::any::TypeId, ::std::collections::HashMap<uuid::Uuid, Box<dyn ecs::Component>>>,
-                            systems: &mut ::std::collections::HashMap<::std::any::TypeId, Box<dyn ecs::System>>
-                        ) {
-                            let sys = systems.get_mut(&::std::any::TypeId::of::<Self>()).expect("System isn't part of ECS");
-                            let sys = ((&mut **sys) as &mut dyn ::std::any::Any).downcast_mut::<Self>().expect("Couldn't downcast system data struct");
-                            sys.__pass(components);
                         }
                     }.into()
                 }

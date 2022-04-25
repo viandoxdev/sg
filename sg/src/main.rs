@@ -7,8 +7,8 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 
 use components::PositionComponent;
-use ecs::ECS;
-use systems::GraphicSystem;
+use ecs::{ECS, owned_entity};
+use systems::{GravitySystem, CenterSystem, LoggingSystem, GraphicSystem};
 //use systems::{GravitySystem, CenterSystem, LoggingSystem};
 
 mod components;
@@ -43,9 +43,19 @@ fn main() {
 
     let mut ecs = ECS::new();
     ecs.register_component::<PositionComponent>();
-    //ecs.register_system(GravitySystem { g: 4.0 }, "gravity");
-    //ecs.register_system(CenterSystem { res: PositionComponent { x: 0.0, y: 0.0, z: 0.0 }}, "gravity");
-    //ecs.register_system(LoggingSystem {}, "log");
+    ecs.register_system(GravitySystem { g: 4.0 }, "gravity");
+    ecs.register_system(CenterSystem { res: PositionComponent { x: 0.0, y: 0.0, z: 0.0 }}, "gravity");
+    ecs.register_system(LoggingSystem {}, "log");
+
+    ecs.add_entity(owned_entity!{
+        PositionComponent {
+            x: 0.0, y: 0.0, z: 1.0
+        }
+    });
+    
+    ecs.run_systems("log");
+    ecs.run_systems("gravity");
+    ecs.run_systems("log");
 
     pollster::block_on(run(&mut ecs));
 }

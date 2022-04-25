@@ -91,6 +91,7 @@ impl ECS {
                 .systems
                 .get_mut(&system_id)
                 .expect("Unknown system in category {category}");
+            system.pass(&mut self.components);
         }
     }
 }
@@ -134,7 +135,7 @@ impl OwnedEntity {
 #[macro_export]
 macro_rules! owned_entity {
     ($($comp:expr),*$(,)?) => {{
-        use $crate::ecs::OwnedEntity;
+        use ecs::OwnedEntity;
 
         let mut entity = OwnedEntity::new();
         $(entity.add($comp);)*
@@ -150,18 +151,10 @@ pub trait System: Any {
     {
         "<UNAMED_SYSTEM>"
     }
-    fn __pass(
+    fn pass(
         &mut self,
         _components: &mut HashMap<TypeId, HashMap<Uuid, Box<dyn Component>>>,
     ) -> () {
-    }
-    fn pass(
-        _components: &mut HashMap<TypeId, HashMap<Uuid, Box<dyn Component>>>,
-        _systems: &mut HashMap<TypeId, Box<dyn System>>,
-    ) -> ()
-    where
-        Self: Sized,
-    {
     }
     fn pre(&mut self) -> ()
     where
