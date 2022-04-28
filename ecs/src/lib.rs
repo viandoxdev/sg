@@ -69,9 +69,10 @@ impl ECS {
 
     /// Register a new system into the ECS, systems will be run sequentially in order of
     /// registration
-    pub fn register_system<T: System + 'static, S: ToString>(&mut self, system: T, category: S) {
+    pub fn register_system<T: System + 'static, S: ToString>(&mut self, mut system: T, category: S) {
         let category = category.to_string();
         log::debug!("Registering system {} (-> {category})", T::name());
+        system.register();
         self.systems.insert(TypeId::of::<T>(), Box::new(system));
         if let Some(vec) = self.systems_categories.get_mut(&category) {
             vec.push(TypeId::of::<T>());
@@ -91,8 +92,18 @@ impl ECS {
                 .systems
                 .get_mut(&system_id)
                 .expect("Unknown system in category {category}");
+            system.pre();
             system.pass(&mut self.components);
+            system.post();
         }
+    }
+
+    pub fn get_system_mut<S: System>(&mut self) -> Option<&mut S> {
+        Some((&mut **(self.systems.get_mut(&TypeId::of::<S>())?) as &mut dyn Any).downcast_mut::<S>()?)
+    }
+
+    pub fn get_system<S: System>(&self) -> Option<&S> {
+        Some((&**(self.systems.get(&TypeId::of::<S>())?) as &dyn Any).downcast_ref::<S>()?)
     }
 }
 
@@ -154,16 +165,41 @@ pub trait System: Any {
     fn pass(
         &mut self,
         _components: &mut HashMap<TypeId, HashMap<Uuid, Box<dyn Component>>>,
-    ) -> () {
+    ) -> () {}
+    fn pre(&mut self) -> () {}
+    fn post(&mut self) -> () {}
+    fn register(&mut self) -> () {}
+}
+
+pub struct SystemRequirements {
+    reqs: HashMap<TypeId, bool>
+}
+
+impl SystemRequirements {
+    pub fn new() -> Self {
+        Self {
+            reqs: HashMap::new()
+        }
     }
-    fn pre(&mut self) -> ()
-    where
-        Self: Sized,
-    {
+    pub fn add<C: Component>(mut self) -> Self {
+        self.reqs.insert(TypeId::of::<C>(), false);
+        self
     }
-    fn post(&mut self) -> ()
-    where
-        Self: Sized,
-    {
+    pub fn add_optional<C: Component>(mut self) -> Self {
+        self.reqs.insert(TypeId::of::<C>(), true);
+        self
     }
+    pub fn filter<'a>(&self, entities: &'a mut HashMap<TypeId, HashMap<Uuid, Box<dyn Component + 'static>>>) -> HashMap<Uuid, HashMap<TypeId, &'a mut Box<dyn Component + 'static>>> {
+        let mut required_components = entities.iter().filter(|(tid, _)| self.reqs.get(tid).is_some()).map(|(_, v)| v.keys());
+        let first_required_component = required_components.next().expect("Expected at least one required component");
+        let uuids = first_required_component.filter(|uuid| required_components.all(|mut other| other.any(|other_uuid| other_uuid == *uuid))).map(|id| *id).collect::<Vec<Uuid>>();
+        let mut entities_ref = entities.iter_mut().map(|(tid, map)| (tid, map.iter_mut().collect::<HashMap<_, _>>())).collect::<HashMap<_, _>>();
+        uuids.iter().map(|uuid| (*uuid, HashMap::from_iter(
+                self.reqs.keys().filter_map(|tid| Some((*tid, entities_ref.get_mut(tid).unwrap().remove(uuid)?)))
+        ))).collect()
+    }
+}
+
+pub fn downcast_component<'a, C: Component>(entity: &'a mut HashMap<TypeId, &'a mut Box<dyn Component + 'static>>) -> Option<&'a mut C> {
+    Some((entity.get_mut(&TypeId::of::<C>())?.as_mut() as &mut dyn Any).downcast_mut::<C>()?)
 }

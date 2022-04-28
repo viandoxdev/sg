@@ -2,9 +2,81 @@
 #![feature(proc_macro_span_shrink)]
 
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{quote};
 use syn::spanned::Spanned;
 use syn::{parse_macro_input, FnArg, ItemFn, PatType};
+
+/// See if ty is of form Vec<...> and return Some(...) if it is.
+fn parse_vec(ty: syn::Type) -> Option<syn::Type> {
+    if let syn::Type::Path(syn::TypePath { path: syn::Path {segments, ..}, ..}) = ty {
+        if let syn::PathSegment {ident, arguments: syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {args, ..})} = segments.into_iter().last()? {
+            if ident.to_string() == "Vec" {
+                if let syn::GenericArgument::Type(out) = args.into_iter().next()? {
+                    return Some(out);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// See if ty is of form Vec<...> and return Some(...) if it is.
+fn parse_hashmap(ty: syn::Type) -> Option<(syn::Type, syn::Type)> {
+    if let syn::Type::Path(syn::TypePath { path: syn::Path {segments, ..}, ..}) = ty.to_owned() {
+        if let syn::PathSegment {ident, arguments: syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {args, ..})} = segments.into_iter().last()? {
+            if ident.to_string() == "HashMap" {
+                let mut args = args.into_iter().filter_map(|arg| match arg {
+                    syn::GenericArgument::Type(ty) => Some(ty),
+                    _ => None
+                });
+                return Some((args.next()?, args.next()?));
+            }
+        }
+    }
+    None
+}
+
+/// See if ty is of form Option<...> and return Some(...) if it is.
+fn parse_option(ty: syn::Type) -> Option<syn::Type> {
+    if let syn::Type::Path(syn::TypePath { path: syn::Path {segments, ..}, ..}) = ty {
+        if let syn::PathSegment {ident, arguments: syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {args, ..})} = segments.into_iter().last()? {
+            if ident.to_string() == "Option" {
+                if let syn::GenericArgument::Type(out) = args.into_iter().next()? {
+                    return Some(out);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn get_generics(ty: syn::Type) -> Vec<syn::Type> {
+    if let syn::Type::Path(syn::TypePath { path: syn::Path {segments, ..}, ..}) = ty {
+        if let Some(syn::PathSegment {ident, arguments: syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {args, ..})}) = segments.into_iter().last() {
+            if ident.to_string() == "Option" {
+                return args.into_iter().filter_map(|arg| match arg {
+                    syn::GenericArgument::Type(ty) => Some(ty),
+                    _ => None
+                }).collect();
+            }
+        }
+    }
+    vec![]
+}
+
+/// Split type to vec:
+/// A -> vec![A]
+/// (A) -> vec![A]
+/// (A, B, ...) -> vec![A, B, ...]
+fn split_type(ty: syn::Type) -> Vec<syn::Type> {
+    if let syn::Type::Paren(syn::TypeParen {elem, ..}) = ty {
+        vec![*elem.to_owned()]
+    } else if let syn::Type::Tuple(syn::TypeTuple {elems, ..}) = ty {
+        elems.into_iter().collect::<Vec<_>>()
+    } else {
+        vec![ty]
+    }
+}
 
 #[proc_macro_attribute]
 pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
@@ -31,34 +103,35 @@ pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
     if &name_str == "pass" {
         // sig should be fn pass(&mut self, ... components) -> ()
         let mut comps = Vec::<(syn::Pat, syn::Type)>::new();
+        let mut comps_opt = Vec::<(syn::Pat, syn::Type)>::new();
+
         for arg in args {
             if let FnArg::Typed(PatType { pat, ty, .. }) = arg {
-                comps.push((*pat.to_owned(), *ty.to_owned()));
+                match parse_option(*ty.to_owned()) {
+                    Some(ty) => comps_opt.push((*pat.to_owned(), ty)),
+                    None => comps.push((*pat.to_owned(), *ty.to_owned())),
+                }
             }
         }
 
-        let types = comps.iter().map(|(_, t)| {
-            quote! {
-                ::std::any::TypeId::of::<#t>()
-            }
-        });
+        let reqs = comps.iter().map(|(_, ty)| quote!{
+            .add::<#ty>()
+        }).chain(comps_opt.iter().map(|(_, ty)| quote!{
+            .add_optional::<#ty>()
+        }));
         let lets = comps.iter().map(|(pat, ty)| quote!{
-            let #pat = ((&mut **__components.get_mut(&::std::any::TypeId::of::<#ty>()).unwrap().get_mut(&__id).unwrap())
-                    as &mut dyn ::std::any::Any).downcast_mut::<#ty>().unwrap();
-        });
+            let #pat = ecs::downcast_component::<#ty>(&mut __entity).expect("Missing requried component on filtered entity.");
+        }).chain(comps_opt.iter().map(|(pat, ty)| quote!{
+            let #pat = ecs::downcast_component::<#ty>(&mut __entity);
+        }));
         let block = *fnc.block;
 
         return quote! {
             fn pass(&mut self, __components: &mut ::std::collections::HashMap<::std::any::TypeId, ::std::collections::HashMap<uuid::Uuid, Box<dyn ecs::Component>>>) {
-                let __reqs: ::std::collections::HashSet::<::std::any::TypeId> =
-                    ::std::collections::HashSet::from_iter([#(#types),*].into_iter());
-                let mut __comps = __components.iter()
-                    .filter(|(k,_)| __reqs.contains(k))
-                    .map(|(_, v)| v);
-                let __uuids = __comps.next().expect("No required component list found").keys()
-                    .filter(|k| __comps.all(|c| c.contains_key(k)))
-                    .map(|u|  u.clone()).collect::<Vec<uuid::Uuid>>();
-                for __id in __uuids {
+                let __reqs = ecs::SystemRequirements::new()
+                #(#reqs)*;
+                let __entities = __reqs.filter(__components);
+                for (__id, mut __entity) in __entities {
                     #(#lets)*
                     #block;
                 }
@@ -66,61 +139,53 @@ pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
         }.into();
     } else if &name_str == "pass_many" {
         // sig should be fn pass_many(&mut self, entities: Vec<(... components type)>) -> ()
-        let mut comps = Vec::<syn::Type>::new();
         let entities_arg = args.next().expect("pass_many needs at least two arguments (fn pass_many(&mut self, entities: Vec<(...components...)>))");
         let entities_arg = match entities_arg {
             FnArg::Typed(ty) => ty,
             _ => unreachable!(),
         };
-        let entities_pat = entities_arg.pat.to_owned();
-        if let syn::Type::Path(syn::TypePath { path: syn::Path {segments, ..}, ..}) = &*entities_arg.ty {
-            if let Some(syn::PathSegment {ident, arguments: syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {args, ..})}) = segments.iter().next() {
-                if ident.to_string().as_str() == "Vec" {
-                    if let Some(syn::GenericArgument::Type(syn::Type::Paren(syn::TypeParen {elem, ..}))) = args.iter().next() {
-                        comps.push(*elem.to_owned());
-                    } else if let Some(syn::GenericArgument::Type(syn::Type::Tuple(syn::TypeTuple {elems, ..}))) = args.iter().next() {
-                        comps.extend(elems.iter().cloned());
-                    } else {
-                        entities_arg.span().unwrap().error("Second argument should be of form: name: Vec<(... components ...)>").emit();
-                        return empty;
-                    }
-                    // If we get here, then the second argument is valid.
-                    let types = comps.iter().map(|t| quote! {
-                        ::std::any::TypeId::of::<#t>()
-                    });
-                    let comps = comps.iter().map(|t| quote!{
-                        ((&mut **__map.get_mut(&::std::any::TypeId::of::<#t>()).unwrap().remove(&__id).unwrap()) as &mut dyn ::std::any::Any).downcast_mut::<#t>().unwrap()
-                    });
-                    let block = *fnc.block;
+        let entities_pat = *entities_arg.pat.to_owned();
+        let entities_type = *entities_arg.ty.to_owned();
 
-                    return quote! {
-                        fn pass(&mut self, __components: &mut ::std::collections::HashMap<::std::any::TypeId, ::std::collections::HashMap<uuid::Uuid, Box<dyn ecs::Component>>>) {
-                            let __reqs: ::std::collections::HashSet::<::std::any::TypeId> =
-                                ::std::collections::HashSet::from_iter([#(#types),*].into_iter());
-                            let mut __comps = __components.iter()
-                                .filter(|(k,_)| __reqs.contains(k))
-                                .map(|(_, v)| v);
-                            let __uuids = __comps.next().expect("No required component list found").keys()
-                                .filter(|k| __comps.all(|c| c.contains_key(k)))
-                                .map(|u|  u.clone()).collect::<Vec<uuid::Uuid>>();
-                            let mut #entities_pat = Vec::new();
-                            let mut __map = __components.iter_mut().map(|(k,v)|
-                                    (*k, v.iter_mut().map(|(k, v)| (*k, v)).collect::<::std::collections::HashMap<uuid::Uuid, &mut Box<dyn ecs::Component + 'static>>>())
-                                ).collect::<::std::collections::HashMap<::std::any::TypeId, ::std::collections::HashMap<uuid::Uuid, &mut Box<dyn ecs::Component +'static>>>>();
-                            for __id in __uuids {
-                                #entities_pat.push(
-                                    (
-                                        #(#comps),*
-                                    )
-                                );
-                            }
-                            #block;
-                        }
-                    }.into()
+        if let Some((id, ty)) = parse_hashmap(entities_type) {
+            let comps = split_type(ty).into_iter().map(|ty| match parse_option(ty.to_owned()) {
+                Some(ty) => (ty, true),
+                None => (ty, false),
+            }).collect::<Vec<(syn::Type, bool)>>();
+            let reqs = comps.iter().map(|(ty, opt)| {
+                let name = if *opt {
+                    quote!{add_optional}
+                } else {
+                    quote!{add}
+                };
+                quote!{
+                    .#name::<#ty>()
                 }
-            }
+            });
+            let tuple = comps.iter().map(|(ty, opt)| {
+                let unwrap = if *opt {
+                    quote!{}
+                } else {
+                    quote!{.unwrap()}
+                };
+                quote!{
+                    ecs::downcast_component::<#ty>(e)#unwrap
+                }
+            });
+            let block = *fnc.block;
+
+            return quote! {
+                fn pass(&mut self, __components: &mut ::std::collections::HashMap<::std::any::TypeId, ::std::collections::HashMap<uuid::Uuid, Box<dyn ecs::Component>>>) {
+                    let __reqs = ecs::SystemRequirements::new()
+                        #(#reqs)*;
+                    let mut __entities = __reqs.filter(__components);
+                    let #entities_pat = __entities.iter_mut().map(|(id, e)| (*id, (#(#tuple),*))).collect::<::std::collections::HashMap<_, _>>();
+                    #block;
+                }
+            }.into();
+        } else {
+            entities_arg.span().unwrap().error("Second argument should be of form: name: Vec<(... components ...)>").emit();
         }
-        entities_arg.span().unwrap().error("Second argument should be of form: name: Vec<(... components ...)>").emit();
     } else {
         name.span()
             .unwrap()

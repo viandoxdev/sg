@@ -13,5 +13,8 @@ log = "0.4.16"
 pretty_env_logger = "0.4.0"
 anyhow = "1.0.57"
 wgpu = "0.12"
-winit = "0.26"
+winit = { version = "0.26" }
 pollster = "0.2.5"
+slotmap = "1.0.6"
+bytemuck = { version = "1.4", features = [ "derive" ] }
+
