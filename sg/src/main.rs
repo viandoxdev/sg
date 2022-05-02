@@ -2,12 +2,13 @@
 #![allow(incomplete_features)]
 #![allow(dead_code)]
 
+use glam::Vec3;
 use systems::graphics::{Vertex, GraphicSystem};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 
-use components::{PositionComponent, GraphicsComponent};
+use components::{PositionComponent, GraphicsComponent, TransformsComponent};
 use ecs::{ECS, owned_entity};
 use systems::{GravitySystem, CenterSystem, LoggingSystem};
 //use systems::{GravitySystem, CenterSystem, LoggingSystem};
@@ -23,30 +24,50 @@ async fn run(mut ecs: ECS) {
 
     let gfx = GraphicSystem::new(&window).await;
     ecs.register_system(gfx, "graphics");
+    ecs.register_component::<TransformsComponent>();
     ecs.register_component::<GraphicsComponent>();
+
+    let entity;
+
     {
         let gfx = ecs.get_system_mut::<GraphicSystem>().unwrap();
-        let square = gfx.add_mesh(&[
-                Vertex { position: [-0.5, -0.5, -1.0], color: [1.0, 0.0, 0.0] },
-                Vertex { position: [ 0.5, -0.5, -1.0], color: [1.0, 1.0, 0.0] },
-                Vertex { position: [ 0.5,  0.5, -1.0], color: [0.0, 1.0, 0.0] },
-                Vertex { position: [-0.5,  0.5, -1.0], color: [0.0, 1.0, 1.0] },
+        let square = gfx.mesh_manager.add(&gfx.device,
+            &[
+                Vertex { position: [-0.5, -0.5, 0.0], tex_coords: [1.0, 0.0] },
+                Vertex { position: [ 0.5, -0.5, 0.0], tex_coords: [0.0, 0.0] },
+                Vertex { position: [ 0.5,  0.5, 0.0], tex_coords: [0.0, 1.0] },
+                Vertex { position: [-0.5,  0.5, 0.0], tex_coords: [1.0, 1.0] },
             ],
             &[
                 [0, 1, 2],
                 [0, 2, 3],
-            ]
+            ],
         );
-        let entity = ecs.new_entity();
+        let img = image::load_from_memory(include_bytes!("../tex.jpg")).unwrap();
+        let set = gfx.texture_manager.add_set();
+        let tex = gfx.texture_manager.add_texture(img, set).unwrap();
+        let mut tsm = TransformsComponent::new();
+        tsm.set_scale(Vec3::new(2.0, 1.0, 1.0));
+        entity = ecs.new_entity();
         ecs.add_component(entity, GraphicsComponent {
-            mesh: square
+            mesh: square,
+            texture: tex
         });
+        ecs.add_component(entity, tsm);
     }
 
+    let mut count = 0f64;
 
     event_loop.run(move |event, _, control_flow| match event {
         Event::RedrawRequested(id) if id == window.id() => {
+            count += 1.0;
             ecs.run_systems("graphics");
+
+            ecs.get_component_mut::<TransformsComponent>(entity).unwrap().set_scale(Vec3::new(
+                (count / 100.0).sin() as f32 + 1.0,
+                (count / 100.0).cos() as f32 + 1.0, 
+                1.0
+            ));
             let gfx = ecs.get_system_mut::<GraphicSystem>().unwrap();
             match gfx.feedback() {
                 Ok(_) => {}

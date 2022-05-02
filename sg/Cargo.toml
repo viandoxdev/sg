@@ -8,13 +8,14 @@ resolver = "2"
 
 [dependencies]
 ecs = { path = "../ecs" }
+pollster = "0.2.5"
 uuid = {version = "1.0.0", features = ["v4", "fast-rng"]}
 log = "0.4.16"
 pretty_env_logger = "0.4.0"
 anyhow = "1.0.57"
 wgpu = "0.12"
-winit = { version = "0.26" }
-pollster = "0.2.5"
+winit = "0.26"
 slotmap = "1.0.6"
 bytemuck = { version = "1.4", features = [ "derive" ] }
-
+glam = "0.20"
+image = "0.24"

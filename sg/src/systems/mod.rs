@@ -1,7 +1,4 @@
-use anyhow::Result;
 use ecs::{system_pass, System, SystemRequirements, downcast_component};
-use wgpu::include_wgsl;
-use winit::window::Window;
 
 use crate::components::PositionComponent;
 
@@ -13,10 +10,8 @@ pub struct GravitySystem {
 
 impl System for GravitySystem {
     #[system_pass]
-    fn pass(&mut self, pos: Option<PositionComponent>) {
-        if let Some(pos) = pos {
-            pos.z -= self.g;
-        }
+    fn pass(&mut self, pos: PositionComponent) {
+        pos.z -= self.g;
     }
 }
 

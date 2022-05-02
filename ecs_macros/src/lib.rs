@@ -147,7 +147,7 @@ pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
         let entities_pat = *entities_arg.pat.to_owned();
         let entities_type = *entities_arg.ty.to_owned();
 
-        if let Some((id, ty)) = parse_hashmap(entities_type) {
+        if let Some((_, ty)) = parse_hashmap(entities_type) {
             let comps = split_type(ty).into_iter().map(|ty| match parse_option(ty.to_owned()) {
                 Some(ty) => (ty, true),
                 None => (ty, false),
@@ -169,7 +169,7 @@ pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
                     quote!{.unwrap()}
                 };
                 quote!{
-                    ecs::downcast_component::<#ty>(e)#unwrap
+                    ecs::downcast_component::<#ty>(&mut e)#unwrap
                 }
             });
             let block = *fnc.block;
@@ -179,7 +179,7 @@ pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
                     let __reqs = ecs::SystemRequirements::new()
                         #(#reqs)*;
                     let mut __entities = __reqs.filter(__components);
-                    let #entities_pat = __entities.iter_mut().map(|(id, e)| (*id, (#(#tuple),*))).collect::<::std::collections::HashMap<_, _>>();
+                    let #entities_pat = __entities.into_iter().map(|(id, mut e)| (id, (#(#tuple),*))).collect::<::std::collections::HashMap<_, _>>();
                     #block;
                 }
             }.into();

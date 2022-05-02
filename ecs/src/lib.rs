@@ -105,6 +105,14 @@ impl ECS {
     pub fn get_system<S: System>(&self) -> Option<&S> {
         Some((&**(self.systems.get(&TypeId::of::<S>())?) as &dyn Any).downcast_ref::<S>()?)
     }
+
+    pub fn get_component<C: Component>(&self, entity: Uuid) -> Option<&C> {
+        Some((&**self.components.get(&TypeId::of::<C>())?.get(&entity)? as &dyn Any).downcast_ref::<C>()?)
+    }
+
+    pub fn get_component_mut<C: Component>(&mut self, entity: Uuid) -> Option<&mut C> {
+        Some((&mut **self.components.get_mut(&TypeId::of::<C>())?.get_mut(&entity)? as &mut dyn Any).downcast_mut::<C>()?)
+    }
 }
 
 pub struct OwnedEntity {
@@ -189,17 +197,25 @@ impl SystemRequirements {
         self.reqs.insert(TypeId::of::<C>(), true);
         self
     }
+    pub fn is_required(&self, tid: &TypeId) -> bool {
+        if let Some(opt) = self.reqs.get(tid) {
+            !opt
+        } else {
+            false
+        }
+    }
     pub fn filter<'a>(&self, entities: &'a mut HashMap<TypeId, HashMap<Uuid, Box<dyn Component + 'static>>>) -> HashMap<Uuid, HashMap<TypeId, &'a mut Box<dyn Component + 'static>>> {
-        let mut required_components = entities.iter().filter(|(tid, _)| self.reqs.get(tid).is_some()).map(|(_, v)| v.keys());
+        let mut required_components = entities.iter().filter(|(tid, _)| self.is_required(tid)).map(|(_, v)| v.keys());
         let first_required_component = required_components.next().expect("Expected at least one required component");
         let uuids = first_required_component.filter(|uuid| required_components.all(|mut other| other.any(|other_uuid| other_uuid == *uuid))).map(|id| *id).collect::<Vec<Uuid>>();
         let mut entities_ref = entities.iter_mut().map(|(tid, map)| (tid, map.iter_mut().collect::<HashMap<_, _>>())).collect::<HashMap<_, _>>();
         uuids.iter().map(|uuid| (*uuid, HashMap::from_iter(
-                self.reqs.keys().filter_map(|tid| Some((*tid, entities_ref.get_mut(tid).unwrap().remove(uuid)?)))
+                self.reqs.keys().filter_map(|tid| Some((*tid, entities_ref.get_mut(tid).expect("Required unregisterd component").remove(uuid)?)))
         ))).collect()
     }
 }
 
-pub fn downcast_component<'a, C: Component>(entity: &'a mut HashMap<TypeId, &'a mut Box<dyn Component + 'static>>) -> Option<&'a mut C> {
-    Some((entity.get_mut(&TypeId::of::<C>())?.as_mut() as &mut dyn Any).downcast_mut::<C>()?)
+/// Retreive and downcast component of type C in entity
+pub fn downcast_component<'a, C: Component>(entity: &mut HashMap<TypeId, &'a mut Box<dyn Component + 'static>>) -> Option<&'a mut C> {
+    Some((entity.remove(&TypeId::of::<C>())?.as_mut() as &mut dyn Any).downcast_mut::<C>()?)
 }
