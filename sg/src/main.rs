@@ -1,8 +1,9 @@
 #![feature(trait_upcasting)]
+#![feature(once_cell)]
 #![allow(incomplete_features)]
 #![allow(dead_code)]
 
-use glam::Vec3;
+use glam::{Vec3, Quat};
 use systems::graphics::{Vertex, GraphicSystem};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -33,19 +34,19 @@ async fn run(mut ecs: ECS) {
         let gfx = ecs.get_system_mut::<GraphicSystem>().unwrap();
         let square = gfx.mesh_manager.add(&gfx.device,
             &[
-                Vertex { position: [-0.5, -0.5, 0.0], tex_coords: [1.0, 0.0] },
-                Vertex { position: [ 0.5, -0.5, 0.0], tex_coords: [0.0, 0.0] },
-                Vertex { position: [ 0.5,  0.5, 0.0], tex_coords: [0.0, 1.0] },
-                Vertex { position: [-0.5,  0.5, 0.0], tex_coords: [1.0, 1.0] },
+                Vertex { position: [ 0.5,  0.5, 0.5], tex_coords: [1.0, 0.0] },
+                Vertex { position: [-0.5,  0.5, 0.5], tex_coords: [0.0, 0.0] },
+                Vertex { position: [-0.5, -0.5, 0.5], tex_coords: [0.0, 1.0] },
+                Vertex { position: [ 0.5, -0.5, 0.5], tex_coords: [1.0, 1.0] },
             ],
             &[
                 [0, 1, 2],
                 [0, 2, 3],
             ],
         );
-        let img = image::load_from_memory(include_bytes!("../tex.jpg")).unwrap();
+        let img = image::load_from_memory(include_bytes!("../tex.png")).unwrap();
         let set = gfx.texture_manager.add_set();
-        let tex = gfx.texture_manager.add_texture(img, set).unwrap();
+        let tex = gfx.texture_manager.add_texture(&gfx.device, &gfx.queue, img, set).unwrap();
         let mut tsm = TransformsComponent::new();
         tsm.set_scale(Vec3::new(2.0, 1.0, 1.0));
         entity = ecs.new_entity();
@@ -63,12 +64,13 @@ async fn run(mut ecs: ECS) {
             count += 1.0;
             ecs.run_systems("graphics");
 
-            ecs.get_component_mut::<TransformsComponent>(entity).unwrap().set_scale(Vec3::new(
-                (count / 100.0).sin() as f32 + 1.0,
-                (count / 100.0).cos() as f32 + 1.0, 
-                1.0
+            ecs.get_component_mut::<TransformsComponent>(entity).unwrap().set_translation(Vec3::new(
+                0.0, 
+                0.0, 
+                1.0, 
             ));
             let gfx = ecs.get_system_mut::<GraphicSystem>().unwrap();
+            gfx.camera.set_rotation(Quat::from_rotation_x((count / 200.0) as f32));
             match gfx.feedback() {
                 Ok(_) => {}
                 Err(wgpu::SurfaceError::Lost) => gfx.resize(gfx.size),

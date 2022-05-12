@@ -1,7 +1,7 @@
-use std::collections::binary_heap;
+use std::{collections::binary_heap, borrow::Borrow, cell::{RefCell, Ref}, f32::consts::{PI, FRAC_PI_2}, lazy::OnceCell};
 
 use ecs::{System, system_pass};
-use glam::Mat4;
+use glam::{Mat4, Quat, Vec3};
 use uuid::Uuid;
 use wgpu::{include_wgsl, RenderPass};
 use winit::window::Window;
@@ -32,7 +32,7 @@ impl Vertex {
                     format: wgpu::VertexFormat::Float32x3,
                 },
                 wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 1,
                     format: wgpu::VertexFormat::Float32x2,
                 }
@@ -41,16 +41,193 @@ impl Vertex {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum Projection {
+    Perspective,
+    Orthograhic,
+    None,
+}
+
+pub struct Camera {
+    position: Vec3,
+    rotation: Quat,
+    fov: f32,
+    near: f32,
+    far: f32,
+    projection: Projection,
+    aspect: f32,
+    matrix: Mat4,
+    dirty: bool,
+    buffer: OnceCell<wgpu::Buffer>,
+    bind_group: OnceCell<wgpu::BindGroup>,
+    bind_group_layout: OnceCell<wgpu::BindGroupLayout>,
+}
+
+impl Camera {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    fn set_dirty(&mut self) {
+        self.dirty = true;
+    }
+    fn unset_dirty(&mut self) {
+        self.dirty = false;
+    }
+    fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+    pub fn set_position(&mut self, position: Vec3) {
+        self.position = position;
+        self.set_dirty();
+    }
+    pub fn set_rotation(&mut self, rotation: Quat) {
+        self.rotation = rotation;
+        self.set_dirty();
+    }
+    pub fn set_fov(&mut self, fov: f32) {
+        self.fov = fov;
+        self.set_dirty();
+    }
+    pub fn set_near(&mut self, near: f32) {
+        self.near = near;
+        self.set_dirty();
+    }
+    pub fn set_far(&mut self, far: f32) {
+        self.far = far;
+        self.set_dirty();
+    }
+    pub fn set_projection(&mut self, projection: Projection) {
+        self.projection = projection;
+        self.set_dirty();
+    }
+    pub fn set_aspect(&mut self, aspect: f32) {
+        self.aspect = aspect;
+        self.set_dirty();
+    }
+    pub fn get_position(&self) -> Vec3 {
+        self.position
+    }
+    pub fn get_rotation(&self) -> Quat {
+        self.rotation
+    }
+    pub fn get_fov(&self) -> f32 {
+        self.fov
+    }
+    pub fn get_near(&self) -> f32 {
+        self.near
+    }
+    pub fn get_far(&self) -> f32 {
+        self.far
+    }
+    pub fn get_projection(&self) -> Projection {
+        self.projection
+    }
+    pub fn get_aspect(&self) -> f32 {
+        self.aspect
+    }
+    fn recompute_matrix(&mut self) {
+        let view = Mat4::from_rotation_translation(self.rotation.inverse(), -self.position);
+        let projection = match self.projection {
+            Projection::Perspective => Mat4::perspective_lh(self.fov, self.aspect, self.near, self.far),
+            Projection::Orthograhic => {
+                let top = self.near * self.fov.tan();
+                let bottom = -top;
+                let left = top * self.aspect;
+                let right = -left;
+                Mat4::orthographic_rh(left, right, bottom, top, self.near, self.far)
+            }
+            Projection::None => Mat4::IDENTITY,
+        };
+        self.matrix = projection * view;
+    }
+    fn get_buffer(&self, device: &wgpu::Device) -> &wgpu::Buffer {
+        self.buffer.get_or_init(|| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                mapped_at_creation: false,
+                size: 64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                label: Some("Camera matrix buffer")
+            })
+        })
+    }
+    fn update(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if self.is_dirty() {
+            log::info!("Dirty {:?}", self.position);
+            self.recompute_matrix();
+            queue.write_buffer(self.get_buffer(device), 0, bytemuck::cast_slice(self.matrix.borrow().as_ref()));
+            self.unset_dirty();
+        }
+    }
+    fn get_bind_group(&self, device: &wgpu::Device) -> &wgpu::BindGroup {
+        self.bind_group.get_or_init(|| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: self.get_bind_group_layout(device),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: self.get_buffer(device),
+                            offset: 0,
+                            size: None,
+                        })
+                    }
+                ],
+                label: Some("Camera bind group")
+            })
+        })
+    }
+    // TODO: just use &mut self
+    fn get_bind_group_layout(&self, device: &wgpu::Device) -> &wgpu::BindGroupLayout {
+        self.bind_group_layout.get_or_init(|| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None
+                        },
+                        count: None,
+                    }
+                ],
+                label: Some("Camera bind group layout")
+            })
+        })
+    }
+}
+
+impl Default for Camera {
+    fn default() -> Self {
+        let mut cam = Self {
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            projection: Projection::Perspective,
+            aspect: 1.777,
+            fov: FRAC_PI_2,
+            near: 0.1,
+            far: 100.0,
+            matrix: Mat4::IDENTITY,
+            dirty: true,
+            buffer: OnceCell::new(),
+            bind_group: OnceCell::new(),
+            bind_group_layout: OnceCell::new(),
+        };
+        cam.recompute_matrix();
+        cam
+    }
+}
+
 pub struct GraphicSystem {
     pub size: winit::dpi::PhysicalSize<u32>,
     pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
     surface: wgpu::Surface,
-    queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
-    projection_matrix: Mat4,
     feedback: Result<(), wgpu::SurfaceError>,
-
+    pub camera: Camera,
     pub mesh_manager: MeshManager,
     pub texture_manager: TextureManager,
 }
@@ -91,17 +268,22 @@ impl System for GraphicSystem {
                 });
                 render_pass.set_pipeline(&self.render_pipeline);
 
+                self.camera.update(&self.device, &self.queue);
+
                 for (id, (gfx, tsm)) in entities {
                     let tsm = tsm.cloned().unwrap_or_default();
                     let mesh = self.mesh_manager.get(gfx.mesh).expect(&format!("Unknown mesh on {id}"));
 
+
+                    let (tex_bindgroup, index) = self.texture_manager.get_bindgroup(&self.device, gfx.texture);
+                    let cam_bindgroup = self.camera.get_bind_group(&self.device);
+
                     render_pass.set_vertex_buffer(0, mesh.verticies.slice(..));
                     render_pass.set_index_buffer(mesh.indicies.slice(..), wgpu::IndexFormat::Uint16);
-                    let (bindgroup, index) = self.texture_manager.get_bindgroup(&self.device, &self.queue, gfx.texture);
-                    let bindgroup = *bindgroup.clone();
-                    render_pass.set_bind_group(0, &bindgroup, &[]);
+                    render_pass.set_bind_group(0, tex_bindgroup, &[]);
+                    render_pass.set_bind_group(1, cam_bindgroup, &[]);
                     render_pass.set_push_constants(wgpu::ShaderStages::VERTEX, 0, bytemuck::cast_slice(tsm.mat().as_ref()));
-                    render_pass.set_push_constants(wgpu::ShaderStages::FRAGMENT, 64, bytemuck::cast_slice(&[index]));
+                    render_pass.set_push_constants(wgpu::ShaderStages::FRAGMENT, 64, &index.to_be_bytes());
                     render_pass.draw_indexed(0..mesh.num_indicies, 0, 0..1);
                 }
 
@@ -132,11 +314,11 @@ impl GraphicSystem {
             .await
             .unwrap();
         let mut limits = wgpu::Limits::default();
-        limits.max_push_constant_size = 64;
+        limits.max_push_constant_size = 68;
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    features: wgpu::Features::PUSH_CONSTANTS | wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY,
+                    features: wgpu::Features::PUSH_CONSTANTS | wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
                     limits,
                     label: None,
                 },
@@ -160,11 +342,17 @@ impl GraphicSystem {
         };
         let texture_push_constant_range = wgpu::PushConstantRange {
             stages: wgpu::ShaderStages::FRAGMENT,
-            range: 0..4
+            range: 64..68
         };
+        // create now to get the bind group layout.
+        let texture_manager = TextureManager::new();
+        let mut camera = Camera::new();
+        camera.set_aspect(size.width as f32 / size.height as f32);
+        let tm_bind_group_layout = texture_manager.layout(&device);
+        let cam_bind_group_layout = camera.get_bind_group_layout(&device);
         let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[tm_bind_group_layout, cam_bind_group_layout],
             push_constant_ranges: &[model_push_constant_range, texture_push_constant_range],
         });
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -211,16 +399,11 @@ impl GraphicSystem {
             config,
             size,
             render_pipeline,
-            projection_matrix: Mat4::IDENTITY,
             feedback: Ok(()),
             mesh_manager: MeshManager::new(),
-            texture_manager: TextureManager::new()
+            texture_manager,
+            camera,
         }
-    }
-    fn render<'a>(&'a mut self, render_pass: &mut RenderPass<'a>, id: Uuid, gfx: &mut GraphicsComponent, tsm: TransformsComponent) {
-    }
-    pub fn set_projection(&mut self, mat: Mat4) {
-        self.projection_matrix = mat;
     }
     pub fn feedback(&self) -> Result<(), wgpu::SurfaceError> {
         self.feedback.as_ref().map_err(|err| err.clone())?;
@@ -232,6 +415,7 @@ impl GraphicSystem {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
+            self.camera.set_aspect(new_size.width as f32 / new_size.height as f32);
         }
     }
 }
