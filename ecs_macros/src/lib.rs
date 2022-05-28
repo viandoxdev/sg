@@ -2,14 +2,23 @@
 #![feature(proc_macro_span_shrink)]
 
 use proc_macro::TokenStream;
-use quote::{quote};
+use quote::quote;
 use syn::spanned::Spanned;
 use syn::{parse_macro_input, FnArg, ItemFn, PatType};
 
 /// See if ty is of form Vec<...> and return Some(...) if it is.
 fn parse_vec(ty: syn::Type) -> Option<syn::Type> {
-    if let syn::Type::Path(syn::TypePath { path: syn::Path {segments, ..}, ..}) = ty {
-        if let syn::PathSegment {ident, arguments: syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {args, ..})} = segments.into_iter().last()? {
+    if let syn::Type::Path(syn::TypePath {
+        path: syn::Path { segments, .. },
+        ..
+    }) = ty
+    {
+        if let syn::PathSegment {
+            ident,
+            arguments:
+                syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments { args, .. }),
+        } = segments.into_iter().last()?
+        {
             if ident.to_string() == "Vec" {
                 if let syn::GenericArgument::Type(out) = args.into_iter().next()? {
                     return Some(out);
@@ -22,12 +31,21 @@ fn parse_vec(ty: syn::Type) -> Option<syn::Type> {
 
 /// See if ty is of form Vec<...> and return Some(...) if it is.
 fn parse_hashmap(ty: syn::Type) -> Option<(syn::Type, syn::Type)> {
-    if let syn::Type::Path(syn::TypePath { path: syn::Path {segments, ..}, ..}) = ty.to_owned() {
-        if let syn::PathSegment {ident, arguments: syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {args, ..})} = segments.into_iter().last()? {
+    if let syn::Type::Path(syn::TypePath {
+        path: syn::Path { segments, .. },
+        ..
+    }) = ty.to_owned()
+    {
+        if let syn::PathSegment {
+            ident,
+            arguments:
+                syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments { args, .. }),
+        } = segments.into_iter().last()?
+        {
             if ident.to_string() == "HashMap" {
                 let mut args = args.into_iter().filter_map(|arg| match arg {
                     syn::GenericArgument::Type(ty) => Some(ty),
-                    _ => None
+                    _ => None,
                 });
                 return Some((args.next()?, args.next()?));
             }
@@ -38,8 +56,17 @@ fn parse_hashmap(ty: syn::Type) -> Option<(syn::Type, syn::Type)> {
 
 /// See if ty is of form Option<...> and return Some(...) if it is.
 fn parse_option(ty: syn::Type) -> Option<syn::Type> {
-    if let syn::Type::Path(syn::TypePath { path: syn::Path {segments, ..}, ..}) = ty {
-        if let syn::PathSegment {ident, arguments: syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {args, ..})} = segments.into_iter().last()? {
+    if let syn::Type::Path(syn::TypePath {
+        path: syn::Path { segments, .. },
+        ..
+    }) = ty
+    {
+        if let syn::PathSegment {
+            ident,
+            arguments:
+                syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments { args, .. }),
+        } = segments.into_iter().last()?
+        {
             if ident.to_string() == "Option" {
                 if let syn::GenericArgument::Type(out) = args.into_iter().next()? {
                     return Some(out);
@@ -51,13 +78,25 @@ fn parse_option(ty: syn::Type) -> Option<syn::Type> {
 }
 
 fn get_generics(ty: syn::Type) -> Vec<syn::Type> {
-    if let syn::Type::Path(syn::TypePath { path: syn::Path {segments, ..}, ..}) = ty {
-        if let Some(syn::PathSegment {ident, arguments: syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {args, ..})}) = segments.into_iter().last() {
+    if let syn::Type::Path(syn::TypePath {
+        path: syn::Path { segments, .. },
+        ..
+    }) = ty
+    {
+        if let Some(syn::PathSegment {
+            ident,
+            arguments:
+                syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments { args, .. }),
+        }) = segments.into_iter().last()
+        {
             if ident.to_string() == "Option" {
-                return args.into_iter().filter_map(|arg| match arg {
-                    syn::GenericArgument::Type(ty) => Some(ty),
-                    _ => None
-                }).collect();
+                return args
+                    .into_iter()
+                    .filter_map(|arg| match arg {
+                        syn::GenericArgument::Type(ty) => Some(ty),
+                        _ => None,
+                    })
+                    .collect();
             }
         }
     }
@@ -69,9 +108,9 @@ fn get_generics(ty: syn::Type) -> Vec<syn::Type> {
 /// (A) -> vec![A]
 /// (A, B, ...) -> vec![A, B, ...]
 fn split_type(ty: syn::Type) -> Vec<syn::Type> {
-    if let syn::Type::Paren(syn::TypeParen {elem, ..}) = ty {
+    if let syn::Type::Paren(syn::TypeParen { elem, .. }) = ty {
         vec![*elem.to_owned()]
-    } else if let syn::Type::Tuple(syn::TypeTuple {elems, ..}) = ty {
+    } else if let syn::Type::Tuple(syn::TypeTuple { elems, .. }) = ty {
         elems.into_iter().collect::<Vec<_>>()
     } else {
         vec![ty]
@@ -114,11 +153,18 @@ pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
-        let reqs = comps.iter().map(|(_, ty)| quote!{
-            .add::<#ty>()
-        }).chain(comps_opt.iter().map(|(_, ty)| quote!{
-            .add_optional::<#ty>()
-        }));
+        let reqs = comps
+            .iter()
+            .map(|(_, ty)| {
+                quote! {
+                    .add::<#ty>()
+                }
+            })
+            .chain(comps_opt.iter().map(|(_, ty)| {
+                quote! {
+                    .add_optional::<#ty>()
+                }
+            }));
         let lets = comps.iter().map(|(pat, ty)| quote!{
             let #pat = ecs::downcast_component::<#ty>(&mut __entity).expect("Missing requried component on filtered entity.");
         }).chain(comps_opt.iter().map(|(pat, ty)| quote!{
@@ -148,27 +194,30 @@ pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
         let entities_type = *entities_arg.ty.to_owned();
 
         if let Some((_, ty)) = parse_hashmap(entities_type) {
-            let comps = split_type(ty).into_iter().map(|ty| match parse_option(ty.to_owned()) {
-                Some(ty) => (ty, true),
-                None => (ty, false),
-            }).collect::<Vec<(syn::Type, bool)>>();
+            let comps = split_type(ty)
+                .into_iter()
+                .map(|ty| match parse_option(ty.to_owned()) {
+                    Some(ty) => (ty, true),
+                    None => (ty, false),
+                })
+                .collect::<Vec<(syn::Type, bool)>>();
             let reqs = comps.iter().map(|(ty, opt)| {
                 let name = if *opt {
-                    quote!{add_optional}
+                    quote! {add_optional}
                 } else {
-                    quote!{add}
+                    quote! {add}
                 };
-                quote!{
+                quote! {
                     .#name::<#ty>()
                 }
             });
             let tuple = comps.iter().map(|(ty, opt)| {
                 let unwrap = if *opt {
-                    quote!{}
+                    quote! {}
                 } else {
-                    quote!{.unwrap()}
+                    quote! {.unwrap()}
                 };
-                quote!{
+                quote! {
                     ecs::downcast_component::<#ty>(&mut e)#unwrap
                 }
             });
@@ -184,7 +233,11 @@ pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }.into();
         } else {
-            entities_arg.span().unwrap().error("Second argument should be of form: name: Vec<(... components ...)>").emit();
+            entities_arg
+                .span()
+                .unwrap()
+                .error("Second argument should be of form: name: Vec<(... components ...)>")
+                .emit();
         }
     } else {
         name.span()

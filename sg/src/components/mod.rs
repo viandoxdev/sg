@@ -1,5 +1,5 @@
 use ecs::Component;
-use glam::{Mat4, Vec3, Quat};
+use glam::{Mat4, Quat, Vec3};
 
 use crate::systems::graphics::{mesh_manager::MeshHandle, texture_manager::TextureHandle};
 
@@ -32,11 +32,12 @@ impl TransformsComponent {
             translate: Vec3::ZERO,
             scale: Vec3::ONE,
             rotate: Quat::default(),
-            matrix: Mat4::IDENTITY
+            matrix: Mat4::IDENTITY,
         }
     }
     fn update(&mut self) {
-        self.matrix = Mat4::from_scale_rotation_translation(self.scale, self.rotate, self.translate);
+        self.matrix =
+            Mat4::from_scale_rotation_translation(self.scale, self.rotate, self.translate);
     }
     pub fn set_translation(&mut self, trans: Vec3) {
         self.translate = trans;

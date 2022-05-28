@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use slotmap::SlotMap;
 use wgpu::util::DeviceExt;
 
@@ -15,22 +15,22 @@ slotmap::new_key_type! {
 }
 
 impl Mesh {
-    fn build_buffer(device: &wgpu::Device, verticies: &[Vertex], indicies: &[[u16; 3]]) -> (wgpu::Buffer, wgpu::Buffer) {
+    fn build_buffer(
+        device: &wgpu::Device,
+        verticies: &[Vertex],
+        indicies: &[[u16; 3]],
+    ) -> (wgpu::Buffer, wgpu::Buffer) {
         (
-            device.create_buffer_init(
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some("Vertex Buffer"),
-                    contents: bytemuck::cast_slice(verticies),
-                    usage: wgpu::BufferUsages::VERTEX,
-                }
-            ),
-            device.create_buffer_init(
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some("Index Buffer"),
-                    contents: bytemuck::cast_slice(indicies),
-                    usage: wgpu::BufferUsages::INDEX,
-                }
-            )
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Vertex Buffer"),
+                contents: bytemuck::cast_slice(verticies),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Index Buffer"),
+                contents: bytemuck::cast_slice(indicies),
+                usage: wgpu::BufferUsages::INDEX,
+            }),
         )
     }
     pub fn new(device: &wgpu::Device, verticies: &[Vertex], indicies: &[[u16; 3]]) -> Self {
@@ -39,7 +39,7 @@ impl Mesh {
         Self {
             verticies,
             indicies,
-            num_indicies
+            num_indicies,
         }
     }
     pub fn update(&mut self, device: &wgpu::Device, verticies: &[Vertex], indicies: &[[u16; 3]]) {
@@ -55,11 +55,16 @@ pub struct MeshManager {
 impl MeshManager {
     pub fn new() -> Self {
         Self {
-            meshes: SlotMap::with_key()
+            meshes: SlotMap::with_key(),
         }
     }
 
-    pub fn add(&mut self, device: &wgpu::Device, verticies: &[Vertex], indicies: &[[u16; 3]]) -> MeshHandle {
+    pub fn add(
+        &mut self,
+        device: &wgpu::Device,
+        verticies: &[Vertex],
+        indicies: &[[u16; 3]],
+    ) -> MeshHandle {
         self.meshes.insert(Mesh::new(device, verticies, indicies))
     }
 
@@ -67,8 +72,17 @@ impl MeshManager {
         self.meshes.remove(handle)
     }
 
-    pub fn update(&mut self, handle: MeshHandle, device: &wgpu::Device, verticies: &[Vertex], indicies: &[[u16; 3]]) -> Result<()> {
-        self.meshes.get_mut(handle).ok_or(anyhow!("Handle doesn't point to any mesh"))?.update(device, verticies, indicies);
+    pub fn update(
+        &mut self,
+        handle: MeshHandle,
+        device: &wgpu::Device,
+        verticies: &[Vertex],
+        indicies: &[[u16; 3]],
+    ) -> Result<()> {
+        self.meshes
+            .get_mut(handle)
+            .ok_or(anyhow!("Handle doesn't point to any mesh"))?
+            .update(device, verticies, indicies);
         Ok(())
     }
 
@@ -76,5 +90,3 @@ impl MeshManager {
         self.meshes.get(handle)
     }
 }
-
-

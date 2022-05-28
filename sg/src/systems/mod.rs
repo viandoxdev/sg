@@ -1,11 +1,11 @@
-use ecs::{system_pass, System, SystemRequirements, downcast_component};
+use ecs::{downcast_component, system_pass, System, SystemRequirements};
 
 use crate::components::PositionComponent;
 
 pub mod graphics;
 
 pub struct GravitySystem {
-    pub g: f64
+    pub g: f64,
 }
 
 impl System for GravitySystem {
@@ -16,14 +16,16 @@ impl System for GravitySystem {
 }
 
 pub struct CenterSystem {
-    pub res: PositionComponent
+    pub res: PositionComponent,
 }
 
 impl System for CenterSystem {
     #[system_pass]
     fn pass_many(&mut self, entities: HashMap<Uuid, (PositionComponent)>) {
         let mut pos = PositionComponent {
-            x: 0.0, y: 0.0, z: 0.0
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
         };
         let len = entities.len();
         for (_, epos) in entities {
@@ -42,9 +44,14 @@ impl System for CenterSystem {
 pub struct LoggingSystem {}
 
 impl System for LoggingSystem {
-    fn pass(&mut self, components: &mut std::collections::HashMap<std::any::TypeId, std::collections::HashMap<uuid::Uuid, Box<dyn ecs::Component>>>) -> () {
-        let reqs = SystemRequirements::new()
-            .add::<PositionComponent>();
+    fn pass(
+        &mut self,
+        components: &mut std::collections::HashMap<
+            std::any::TypeId,
+            std::collections::HashMap<uuid::Uuid, Box<dyn ecs::Component>>,
+        >,
+    ) -> () {
+        let reqs = SystemRequirements::new().add::<PositionComponent>();
         let entities = reqs.filter(components);
         for (_, mut comps) in entities {
             let pos = downcast_component::<PositionComponent>(&mut comps).unwrap();
