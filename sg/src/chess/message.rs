@@ -1,3 +1,10 @@
+use std::{io::{Cursor, Read}, ops::Deref};
+
+use anyhow::{anyhow, Result};
+use rsa::{RsaPublicKey, RsaPrivateKey, PaddingScheme, PublicKey, pkcs1::{DecodeRsaPublicKey, EncodeRsaPublicKey}};
+use sha2::{Sha256, Digest};
+use uuid::Uuid;
+
 #[derive(Clone, Copy)]
 enum Error {
     IllegalMove = 0,
@@ -87,7 +94,7 @@ impl Deserialize for Uuid {
 
 impl Serialize for RsaPublicKey {
     fn serialize(&self, bytes: &mut Vec<u8>) -> Result<()> {
-        let slice = self.to_public_key_der()?;
+        let slice = self.to_pkcs1_der()?;
         (slice.as_ref().len() as u64).serialize(bytes)?;
         bytes.extend_from_slice(slice.as_ref());
         Ok(())
