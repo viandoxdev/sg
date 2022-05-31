@@ -46,12 +46,23 @@ impl TextureManager {
         self.sets.insert(vec![])
     }
 
-    pub fn add_image_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, img: DynamicImage, set: TextureSet) -> Result<TextureHandle> {
+    pub fn add_image_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        img: DynamicImage,
+        set: TextureSet,
+    ) -> Result<TextureHandle> {
         let tex = self.create_texture(device, queue, img);
         self.add_texture(tex, set)
     }
 
-    pub fn add_depth_teture(&mut self, device: &wgpu::Device, config: &wgpu::SurfaceConfiguration, set: TextureSet) -> Result<TextureHandle> {
+    pub fn add_depth_teture(
+        &mut self,
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        set: TextureSet,
+    ) -> Result<TextureHandle> {
         let tex = self.create_depth_texture(device, config);
         self.add_texture(tex, set)
     }
@@ -68,10 +79,7 @@ impl TextureManager {
         }
 
         let handle = self.textures.insert(tex);
-        self.sets
-            .get_mut(set)
-            .unwrap()
-            .push(handle);
+        self.sets.get_mut(set).unwrap().push(handle);
         self.textures_set.insert(handle, set);
         // delete bind group as it is no longer valid
         self.cache_bind_groups.get_mut().remove(set);
@@ -82,8 +90,15 @@ impl TextureManager {
         self.textures.get(tex)
     }
 
-    pub fn replace_texture(&mut self, tex: TextureHandle, new_tex: wgpu::TextureView) -> Result<()> {
-        *self.textures.get_mut(tex).ok_or_else(|| anyhow!("Can't replace unknown texture"))? = new_tex;
+    pub fn replace_texture(
+        &mut self,
+        tex: TextureHandle,
+        new_tex: wgpu::TextureView,
+    ) -> Result<()> {
+        *self
+            .textures
+            .get_mut(tex)
+            .ok_or_else(|| anyhow!("Can't replace unknown texture"))? = new_tex;
         let set = self.get_set_of_texture(tex).expect("Texture has no set.");
         self.cache_bind_groups.get_mut().remove(set); // delete cache has it has a reference to the old view.
         Ok(())
@@ -178,10 +193,22 @@ impl TextureManager {
     }
 
     pub fn remove_texture(&mut self, tex: TextureHandle) -> Result<wgpu::TextureView> {
-        let res = self.textures.remove(tex).ok_or_else(|| anyhow!("Trying to remove unknown texture."))?; // remove wgpu texture
-        let set = self.textures_set.remove(tex).expect("Texture doesn't have set."); // remove set from texture
-        // unwraps here are safe because the caches has to be valid.
-        let index = self.sets.get(set).unwrap().iter().position(|s| *s == tex).unwrap();
+        let res = self
+            .textures
+            .remove(tex)
+            .ok_or_else(|| anyhow!("Trying to remove unknown texture."))?; // remove wgpu texture
+        let set = self
+            .textures_set
+            .remove(tex)
+            .expect("Texture doesn't have set."); // remove set from texture
+                                                  // unwraps here are safe because the caches has to be valid.
+        let index = self
+            .sets
+            .get(set)
+            .unwrap()
+            .iter()
+            .position(|s| *s == tex)
+            .unwrap();
         self.sets.get_mut(set).unwrap().remove(index); // remove texture from set
         self.cache_bind_groups.get_mut().remove(set); // delete cached bind group as it is no longer valid and needs to be recreated
         Ok(res)
@@ -192,7 +219,8 @@ impl TextureManager {
         device: &wgpu::Device,
         tex: TextureHandle,
     ) -> (&wgpu::BindGroup, u32) {
-        let set = self.get_set_of_texture(tex)
+        let set = self
+            .get_set_of_texture(tex)
             .expect("Trying to bind bindgroup of unknown texture");
         let index = self
             .sets
@@ -229,7 +257,7 @@ impl TextureManager {
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            label: Some(&format!("TextureManager texture")),
+            label: Some("TextureManager texture"),
         });
 
         queue.write_texture(
@@ -254,12 +282,12 @@ impl TextureManager {
     pub fn create_depth_texture(
         &self,
         device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration
+        config: &wgpu::SurfaceConfiguration,
     ) -> wgpu::TextureView {
         let size = wgpu::Extent3d {
             width: config.width,
             height: config.height,
-            depth_or_array_layers: 1
+            depth_or_array_layers: 1,
         };
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("TextureManager Depth Texture"),
@@ -268,7 +296,7 @@ impl TextureManager {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: Self::DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         });
         tex.create_view(&wgpu::TextureViewDescriptor::default())
     }

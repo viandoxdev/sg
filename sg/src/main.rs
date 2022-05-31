@@ -3,19 +3,23 @@
 #![allow(incomplete_features)]
 #![allow(dead_code)]
 
+use std::thread;
+use std::time::Duration;
+
 use glam::{Quat, Vec3};
 use systems::graphics::{GraphicSystem, Vertex};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 
-use components::{GraphicsComponent, PositionComponent, TransformsComponent};
-use ecs::{owned_entity, ECS};
-use systems::{CenterSystem, GravitySystem, LoggingSystem};
+use components::{GraphicsComponent, TransformsComponent};
+use ecs::ECS;
 
+use crate::chess::Client;
+
+mod chess;
 mod components;
 mod systems;
-mod chess;
 
 async fn run(mut ecs: ECS) {
     let event_loop = EventLoop::new();
@@ -117,6 +121,11 @@ async fn run(mut ecs: ECS) {
 
 fn main() {
     pretty_env_logger::init();
+
+    let mut client = Client::new("127.0.0.1:50000").unwrap();
+    let _peer = Client::new("127.0.0.1:50001").unwrap();
+    client.request_game("127.0.0.1:50001").unwrap();
+    thread::sleep(Duration::from_secs(2));
 
     //let mut ecs = ECS::new();
     //ecs.register_component::<PositionComponent>();

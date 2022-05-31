@@ -5,7 +5,11 @@ use winit::window::Window;
 
 use crate::components::{GraphicsComponent, TransformsComponent};
 
-use self::{camera::Camera, mesh_manager::MeshManager, texture_manager::{TextureManager, TextureHandle}};
+use self::{
+    camera::Camera,
+    mesh_manager::MeshManager,
+    texture_manager::{TextureHandle, TextureManager},
+};
 
 pub mod camera;
 pub mod mesh_manager;
@@ -108,7 +112,7 @@ impl System for GraphicSystem {
                     let mesh = self
                         .mesh_manager
                         .get(gfx.mesh)
-                        .expect(&format!("Unknown mesh on {id}"));
+                        .unwrap_or_else(|| panic!("Unknown mesh on {id}"));
 
                     let (tex_bindgroup, index) = self
                         .texture_manager
@@ -120,7 +124,10 @@ impl System for GraphicSystem {
                         .set_index_buffer(mesh.indicies.slice(..), wgpu::IndexFormat::Uint16);
                     render_pass.set_bind_group(0, tex_bindgroup, &[]);
                     render_pass.set_bind_group(1, cam_bindgroup, &[]);
-                    log::debug!("TEST {}", bytemuck::cast_slice::<f32, u8>(tsm.mat().as_ref()).len());
+                    log::debug!(
+                        "TEST {}",
+                        bytemuck::cast_slice::<f32, u8>(tsm.mat().as_ref()).len()
+                    );
                     render_pass.set_push_constants(
                         wgpu::ShaderStages::VERTEX,
                         0,
@@ -160,8 +167,10 @@ impl GraphicSystem {
             })
             .await
             .unwrap();
-        let mut limits = wgpu::Limits::default();
-        limits.max_push_constant_size = 68;
+        let limits = wgpu::Limits {
+            max_push_constant_size: 68,
+            ..Default::default()
+        };
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
@@ -200,7 +209,9 @@ impl GraphicSystem {
         let mut texture_manager = TextureManager::new();
 
         let set = texture_manager.add_set();
-        let depth_texture = texture_manager.add_depth_teture(&device, &config, set).expect("Error when creating depth texture");
+        let depth_texture = texture_manager
+            .add_depth_teture(&device, &config, set)
+            .expect("Error when creating depth texture");
 
         let mut camera = Camera::new();
         camera.set_aspect(size.width as f32 / size.height as f32);
@@ -277,9 +288,13 @@ impl GraphicSystem {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
-            let tex = self.texture_manager.create_depth_texture(&self.device, &self.config);
-            self.texture_manager.replace_texture(self.depth_texture, tex) // update depth texture
-                .map_err(|_| log::error!("Error when recreating depth texture")).ok(); // warn if error
+            let tex = self
+                .texture_manager
+                .create_depth_texture(&self.device, &self.config);
+            self.texture_manager
+                .replace_texture(self.depth_texture, tex) // update depth texture
+                .map_err(|_| log::error!("Error when recreating depth texture"))
+                .ok(); // warn if error
             self.camera
                 .set_aspect(new_size.width as f32 / new_size.height as f32);
         }

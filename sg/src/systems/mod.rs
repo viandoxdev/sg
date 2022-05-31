@@ -50,7 +50,7 @@ impl System for LoggingSystem {
             std::any::TypeId,
             std::collections::HashMap<uuid::Uuid, Box<dyn ecs::Component>>,
         >,
-    ) -> () {
+    ) {
         let reqs = SystemRequirements::new().add::<PositionComponent>();
         let entities = reqs.filter(components);
         for (_, mut comps) in entities {

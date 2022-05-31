@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 #![feature(proc_macro_diagnostic)]
 #![feature(proc_macro_span_shrink)]
 
@@ -19,7 +20,7 @@ fn parse_vec(ty: syn::Type) -> Option<syn::Type> {
                 syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments { args, .. }),
         } = segments.into_iter().last()?
         {
-            if ident.to_string() == "Vec" {
+            if ident == "Vec" {
                 if let syn::GenericArgument::Type(out) = args.into_iter().next()? {
                     return Some(out);
                 }
@@ -34,7 +35,7 @@ fn parse_hashmap(ty: syn::Type) -> Option<(syn::Type, syn::Type)> {
     if let syn::Type::Path(syn::TypePath {
         path: syn::Path { segments, .. },
         ..
-    }) = ty.to_owned()
+    }) = ty
     {
         if let syn::PathSegment {
             ident,
@@ -42,7 +43,7 @@ fn parse_hashmap(ty: syn::Type) -> Option<(syn::Type, syn::Type)> {
                 syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments { args, .. }),
         } = segments.into_iter().last()?
         {
-            if ident.to_string() == "HashMap" {
+            if ident == "HashMap" {
                 let mut args = args.into_iter().filter_map(|arg| match arg {
                     syn::GenericArgument::Type(ty) => Some(ty),
                     _ => None,
@@ -67,7 +68,7 @@ fn parse_option(ty: syn::Type) -> Option<syn::Type> {
                 syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments { args, .. }),
         } = segments.into_iter().last()?
         {
-            if ident.to_string() == "Option" {
+            if ident == "Option" {
                 if let syn::GenericArgument::Type(out) = args.into_iter().next()? {
                     return Some(out);
                 }
@@ -89,7 +90,7 @@ fn get_generics(ty: syn::Type) -> Vec<syn::Type> {
                 syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments { args, .. }),
         }) = segments.into_iter().last()
         {
-            if ident.to_string() == "Option" {
+            if ident == "Option" {
                 return args
                     .into_iter()
                     .filter_map(|arg| match arg {
@@ -109,7 +110,7 @@ fn get_generics(ty: syn::Type) -> Vec<syn::Type> {
 /// (A, B, ...) -> vec![A, B, ...]
 fn split_type(ty: syn::Type) -> Vec<syn::Type> {
     if let syn::Type::Paren(syn::TypeParen { elem, .. }) = ty {
-        vec![*elem.to_owned()]
+        vec![*elem]
     } else if let syn::Type::Tuple(syn::TypeTuple { elems, .. }) = ty {
         elems.into_iter().collect::<Vec<_>>()
     } else {

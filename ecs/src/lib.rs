@@ -94,7 +94,7 @@ impl ECS {
         for system_id in cat {
             let system = self
                 .systems
-                .get_mut(&system_id)
+                .get_mut(system_id)
                 .expect("Unknown system in category {category}");
             system.pre();
             system.pass(&mut self.components);
@@ -103,31 +103,29 @@ impl ECS {
     }
 
     pub fn get_system_mut<S: System>(&mut self) -> Option<&mut S> {
-        Some(
-            (&mut **(self.systems.get_mut(&TypeId::of::<S>())?) as &mut dyn Any)
-                .downcast_mut::<S>()?,
-        )
+        (&mut **(self.systems.get_mut(&TypeId::of::<S>())?) as &mut dyn Any).downcast_mut::<S>()
     }
 
     pub fn get_system<S: System>(&self) -> Option<&S> {
-        Some((&**(self.systems.get(&TypeId::of::<S>())?) as &dyn Any).downcast_ref::<S>()?)
+        (&**(self.systems.get(&TypeId::of::<S>())?) as &dyn Any).downcast_ref::<S>()
     }
 
     pub fn get_component<C: Component>(&self, entity: Uuid) -> Option<&C> {
-        Some(
-            (&**self.components.get(&TypeId::of::<C>())?.get(&entity)? as &dyn Any)
-                .downcast_ref::<C>()?,
-        )
+        (&**self.components.get(&TypeId::of::<C>())?.get(&entity)? as &dyn Any).downcast_ref::<C>()
     }
 
     pub fn get_component_mut<C: Component>(&mut self, entity: Uuid) -> Option<&mut C> {
-        Some(
-            (&mut **self
-                .components
-                .get_mut(&TypeId::of::<C>())?
-                .get_mut(&entity)? as &mut dyn Any)
-                .downcast_mut::<C>()?,
-        )
+        (&mut **self
+            .components
+            .get_mut(&TypeId::of::<C>())?
+            .get_mut(&entity)? as &mut dyn Any)
+            .downcast_mut::<C>()
+    }
+}
+
+impl Default for ECS {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -167,6 +165,12 @@ impl OwnedEntity {
     }
 }
 
+impl Default for OwnedEntity {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[macro_export]
 macro_rules! owned_entity {
     ($($comp:expr),*$(,)?) => {{
@@ -186,11 +190,10 @@ pub trait System: Any {
     {
         "<UNAMED_SYSTEM>"
     }
-    fn pass(&mut self, _components: &mut HashMap<TypeId, HashMap<Uuid, Box<dyn Component>>>) -> () {
-    }
-    fn pre(&mut self) -> () {}
-    fn post(&mut self) -> () {}
-    fn register(&mut self) -> () {}
+    fn pass(&mut self, _components: &mut HashMap<TypeId, HashMap<Uuid, Box<dyn Component>>>) {}
+    fn pre(&mut self) {}
+    fn post(&mut self) {}
+    fn register(&mut self) {}
 }
 
 pub struct SystemRequirements {
@@ -233,7 +236,7 @@ impl SystemRequirements {
             .filter(|uuid| {
                 required_components.all(|mut other| other.any(|other_uuid| other_uuid == *uuid))
             })
-            .map(|id| *id)
+            .copied()
             .collect::<Vec<Uuid>>();
         let mut entities_ref = entities
             .iter_mut()
@@ -259,9 +262,15 @@ impl SystemRequirements {
     }
 }
 
+impl Default for SystemRequirements {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Retreive and downcast component of type C in entity
 pub fn downcast_component<'a, C: Component>(
     entity: &mut HashMap<TypeId, &'a mut Box<dyn Component + 'static>>,
 ) -> Option<&'a mut C> {
-    Some((entity.remove(&TypeId::of::<C>())?.as_mut() as &mut dyn Any).downcast_mut::<C>()?)
+    (entity.remove(&TypeId::of::<C>())?.as_mut() as &mut dyn Any).downcast_mut::<C>()
 }

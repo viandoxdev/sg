@@ -1,120 +1,79 @@
-use std::{io::{Cursor, Read}, ops::Deref};
-
 use anyhow::{anyhow, Result};
-use rsa::{RsaPublicKey, RsaPrivateKey, PaddingScheme, PublicKey, pkcs1::{DecodeRsaPublicKey, EncodeRsaPublicKey}};
-use sha2::{Sha256, Digest};
+use mio::net::TcpStream;
+use rsa::{PaddingScheme, PublicKey, RsaPrivateKey, RsaPublicKey};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
+use std::{
+    fmt::{Debug, Display},
+    ops::{BitXor, Deref}, io::{Write, Read, Cursor},
+};
 
-#[derive(Clone, Copy)]
-enum Error {
-    IllegalMove = 0,
-}
+use crate::numeric_enum;
 
-impl TryFrom<u8> for Error {
-    type Error = anyhow::Error;
-    fn try_from(value: u8) -> Result<Self> {
-        Ok(match value {
-            0 => Error::IllegalMove,
-            _ => Err(anyhow!("Can't convert u8 to error"))?,
-        })
+use super::serialization::{Serialize, Deserialize};
+
+numeric_enum! {
+    // An error in the game's processing, usally a fatal one
+    pub enum Error: u8 {
+        IllegalMove = 0,
+        Disagreement = 1,
+        UnexpectedMessage = 2,
+    }
+    pub enum Player: u8 {
+        // The peer who sent the game request
+        Requester = 0,
+        // The peer who received it
+        Requestee = 1,
     }
 }
 
-enum Message {
+impl Player {
+    pub fn new_random() -> Player {
+        if rand::random() {
+            Player::Requester
+        } else {
+            Player::Requestee
+        }
+    }
+}
+
+impl BitXor for Player {
+    type Output = Self;
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        Self::try_from(self as u8 ^ rhs as u8).unwrap()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    /// Request a new game from a peer
     NewGameRequest {
         game_id: Uuid,
         /// Client's public key
         public_key: RsaPublicKey,
     },
+    /// Accept a new game from a peer
     NewGameApproval {
         game_id: Uuid,
         /// Public key of peer
         public_key: RsaPublicKey,
     },
+    /// Proposal for the game formalities, each party sends a proposal, then mix theirs with the
+    /// other's to get the final settings
+    GameProposal {
+        /// Who is the starting player (who will play white)
+        starting_player: Player,
+        /// Who is the sender of the message saying they are
+        self_player: Player,
+    },
     Error(Error),
 }
 
-trait Serialize {
-    fn serialize(&self, bytes: &mut Vec<u8>) -> Result<()>;
-}
-
-trait Deserialize {
-    fn deserialize(bytes: &mut Cursor<Vec<u8>>) -> Result<Self> where Self: Sized;
-}
-
-impl<const C: usize> Deserialize for [u8; C] {
-    fn deserialize(bytes: &mut Cursor<Vec<u8>>) -> Result<Self> {
-        let mut buf = [0u8; C];
-        bytes.read_exact(&mut buf)?;
-        Ok(buf)
-    }
-}
-
-impl Serialize for u8 {
-    fn serialize(&self, bytes: &mut Vec<u8>) -> Result<()> {
-        bytes.push(*self);
-        Ok(())
-    }
-}
-
-impl Deserialize for u8 {
-    fn deserialize(bytes: &mut Cursor<Vec<u8>>) -> Result<Self>
-    where Self: Sized {
-        Ok(u8::from_be_bytes(Deserialize::deserialize(bytes)?))
-    }
-}
-
-impl Serialize for u64 {
-    fn serialize(&self, bytes: &mut Vec<u8>) -> Result<()> {
-        bytes.extend_from_slice(&self.to_be_bytes());
-        Ok(())
-    }
-}
-
-impl Deserialize for u64 {
-    fn deserialize(bytes: &mut Cursor<Vec<u8>>) -> Result<Self>
-    where Self: Sized {
-        Ok(u64::from_be_bytes(Deserialize::deserialize(bytes)?))
-    }
-}
-
-impl Serialize for Uuid {
-    fn serialize(&self, bytes: &mut Vec<u8>) -> Result<()> {
-        bytes.extend_from_slice(self.as_bytes());
-        Ok(())
-    }
-}
-
-impl Deserialize for Uuid {
-    fn deserialize(bytes: &mut Cursor<Vec<u8>>) -> Result<Self>
-    where Self: Sized {
-        Ok(Uuid::from_bytes(Deserialize::deserialize(bytes)?))
-    }
-}
-
-impl Serialize for RsaPublicKey {
-    fn serialize(&self, bytes: &mut Vec<u8>) -> Result<()> {
-        let slice = self.to_pkcs1_der()?;
-        (slice.as_ref().len() as u64).serialize(bytes)?;
-        bytes.extend_from_slice(slice.as_ref());
-        Ok(())
-    }
-}
-
-impl Deserialize for RsaPublicKey {
-    fn deserialize(bytes: &mut Cursor<Vec<u8>>) -> Result<Self>
-    where Self: Sized {
-        let len = u64::deserialize(bytes)?;
-        let mut buf = vec![0u8; len as usize];
-        bytes.read_exact(&mut buf)?;
-        Ok(RsaPublicKey::from_pkcs1_der(&buf)?)
-    }
-}
-
 impl Message {
-    const NEW_GAME_REQUEST: u8 = 0;
-    const NEW_GAME_APPROVAL: u8 = 1;
-    const ERROR: u8 = 2;
+    pub const NEW_GAME_REQUEST: u8 = 0;
+    pub const NEW_GAME_APPROVAL: u8 = 1;
+    pub const GAME_PROPOSAL: u8 = 2;
+    pub const ERROR: u8 = 3;
 
     fn hash(&self) -> Result<sha2::digest::Output<Sha256>> {
         let mut buf = Vec::new();
@@ -122,69 +81,118 @@ impl Message {
         Ok(Sha256::digest(&buf))
     }
 
-    fn sign(self, key: RsaPrivateKey) -> Result<SignedMessage> {
+    pub fn sign(self, key: &RsaPrivateKey) -> Result<SignedMessage> {
         let hash = self.hash()?;
         let padding = PaddingScheme::new_pkcs1v15_sign(Some(rsa::Hash::SHA2_256));
         let sig = key.sign(padding, &hash)?;
         Ok(SignedMessage {
             message: self,
-            signature: sig,
+            signature: Signature::try_from(sig)?,
         })
     }
-}
 
-impl Serialize for Message {
-    fn serialize(&self, bytes: &mut Vec<u8>) -> Result<()> {
-        match self {
-            Message::NewGameRequest { game_id, public_key } => {
-                Self::NEW_GAME_REQUEST.serialize(bytes)?;
-                game_id.serialize(bytes)?;
-                public_key.serialize(bytes)?;
-            }
-            Message::NewGameApproval { game_id, public_key } => {
-                Self::NEW_GAME_APPROVAL.serialize(bytes)?;
-                game_id.serialize(bytes)?;
-                public_key.serialize(bytes)?;
-            }
-            Message::Error(err) => {
-                Self::ERROR.serialize(bytes)?;
-                (*err as u8).serialize(bytes)?;
-            }
+    pub fn read(stream: &mut TcpStream) -> Result<Message> {
+        let mut buf = vec![0; 1024];
+        let read = stream.read(&mut buf)?;
+        if read == 0 {
+            return Err(anyhow!("Got 0 bytes from read"));
         }
+        let mut bytes = Cursor::new(buf);
+        Message::deserialize(&mut bytes)
+    }
+
+    pub fn send(&self, stream: &mut TcpStream) -> Result<()> {
+        let mut buf = Vec::new();
+        self.serialize(&mut buf)?;
+        stream.write_all(&buf)?;
         Ok(())
     }
 }
 
-impl Deserialize for Message {
-    fn deserialize(bytes: &mut Cursor<Vec<u8>>) -> Result<Self>
-    where Self: Sized {
-        let code = u8::deserialize(bytes)?;
-        Ok(match code {
-            Self::NEW_GAME_REQUEST => Message::NewGameRequest {
-                game_id: Uuid::deserialize(bytes)?,
-                public_key: RsaPublicKey::deserialize(bytes)?,
-            },
-            Self::NEW_GAME_APPROVAL => Message::NewGameApproval {
-                game_id: Uuid::deserialize(bytes)?,
-                public_key: RsaPublicKey::deserialize(bytes)?,
-            },
-            Self::ERROR => Message::Error(Error::try_from(u8::deserialize(bytes)?)?),
+pub struct Signature {
+    sig: [u8; 256],
+}
 
-            _ => Err(anyhow!("Unknown message type"))?,
-        })
+impl Deref for Signature {
+    type Target = [u8; 256];
+    fn deref(&self) -> &Self::Target {
+        &self.sig
     }
 }
 
-struct SignedMessage {
-    message: Message,
-    signature: Vec<u8>,
+impl Debug for Signature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Signature({self})")
+    }
+}
+
+impl Display for Signature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            self.sig
+                .iter()
+                .map(|byte| format!("{byte:x}"))
+                .collect::<String>()
+        )
+    }
+}
+
+impl TryFrom<Vec<u8>> for Signature {
+    type Error = anyhow::Error;
+    fn try_from(mut value: Vec<u8>) -> Result<Self, Self::Error> {
+        if value.len() >= 256 {
+            let mut arr = [0u8; 256];
+            arr.swap_with_slice(&mut value[0..256]);
+            Ok(Self { sig: arr })
+        } else {
+            Err(anyhow!("Not enough bytes to build signature"))
+        }
+    }
+}
+
+impl From<[u8; 256]> for Signature {
+    fn from(v: [u8; 256]) -> Self {
+        Self { sig: v }
+    }
+}
+
+#[derive(Debug)]
+pub struct SignedMessage {
+    pub message: Message,
+    pub signature: Signature,
 }
 
 impl SignedMessage {
-    fn verify_signature(&self, key: RsaPublicKey) -> Result<()> {
+    pub fn verify_signature(&self, key: &RsaPublicKey) -> Result<()> {
         let hash = self.message.hash()?;
         let padding = PaddingScheme::new_pkcs1v15_sign(Some(rsa::Hash::SHA2_256));
-        key.verify(padding, &hash, &self.signature)?;
+        key.verify(padding, &hash, &*self.signature)?;
+        Ok(())
+    }
+
+    /// Get the Message out of the SignedMessage if the signature is verrified
+    pub fn verify_and_unwrap(self, key: &RsaPublicKey) -> Result<Message> {
+        self.verify_signature(key)?;
+        Ok(self.message)
+    }
+
+    pub fn read(stream: &mut TcpStream) -> Result<SignedMessage> {
+        // TODO: better buffer size management, for now we just assume 1kb is enough
+        let mut buf = vec![0; 1024];
+        let read = stream.read(&mut buf)?;
+        if read == 0 {
+            return Err(anyhow!("Got 0 bytes from read"));
+        }
+        let mut bytes = Cursor::new(buf);
+        SignedMessage::deserialize(&mut bytes)
+    }
+
+    pub fn send(&self, stream: &mut TcpStream) -> Result<()> {
+        let mut buf = Vec::new();
+        self.serialize(&mut buf)?;
+        stream.write_all(&buf)?;
         Ok(())
     }
 }

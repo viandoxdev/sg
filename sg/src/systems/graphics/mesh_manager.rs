@@ -81,7 +81,7 @@ impl MeshManager {
     ) -> Result<()> {
         self.meshes
             .get_mut(handle)
-            .ok_or(anyhow!("Handle doesn't point to any mesh"))?
+            .ok_or_else(|| anyhow!("Handle doesn't point to any mesh"))?
             .update(device, verticies, indicies);
         Ok(())
     }
