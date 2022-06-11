@@ -3,23 +3,20 @@
 #![allow(incomplete_features)]
 #![allow(dead_code)]
 
-use std::thread;
-use std::time::Duration;
-
 use glam::{Quat, Vec3};
+use systems::graphics::mesh_manager::{Mesh, Primitives};
+use systems::{LoggingSystem, GravitySystem, CenterSystem};
 use systems::graphics::{GraphicSystem, Vertex};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 
-use components::{GraphicsComponent, TransformsComponent};
-use ecs::ECS;
-
-use crate::chess::Client;
+use components::{GraphicsComponent, TransformsComponent, PositionComponent};
+use ecs::{ECS, owned_entity};
 
 mod chess;
-mod components;
-mod systems;
+pub mod systems;
+pub mod components;
 
 async fn run(mut ecs: ECS) {
     let event_loop = EventLoop::new();
@@ -34,42 +31,21 @@ async fn run(mut ecs: ECS) {
 
     {
         let gfx = ecs.get_system_mut::<GraphicSystem>().unwrap();
+        let mesh = Mesh::new_cube();
         let square = gfx.mesh_manager.add(
-            &gfx.device,
-            &[
-                Vertex {
-                    position: [0.5, 0.5, 0.5],
-                    tex_coords: [1.0, 0.0],
-                },
-                Vertex {
-                    position: [-0.5, 0.5, 0.5],
-                    tex_coords: [0.0, 0.0],
-                },
-                Vertex {
-                    position: [-0.5, -0.5, 0.5],
-                    tex_coords: [0.0, 1.0],
-                },
-                Vertex {
-                    position: [0.5, -0.5, 0.5],
-                    tex_coords: [1.0, 1.0],
-                },
-            ],
-            &[[0, 1, 2], [0, 2, 3]],
+            &gfx.device, &mesh
         );
-        let img = image::load_from_memory(include_bytes!("../tex.png")).unwrap();
         let set = gfx.texture_manager.add_set();
-        let tex = gfx
-            .texture_manager
-            .add_image_texture(&gfx.device, &gfx.queue, img, set)
-            .unwrap();
+        let tex = gfx.texture_manager.create_single_color_texture(&gfx.device, &gfx.queue, [255, 0, 0, 255]);
+        gfx.texture_manager.add_texture(tex, set).unwrap();
         let mut tsm = TransformsComponent::new();
-        tsm.set_scale(Vec3::new(2.0, 1.0, 1.0));
+        tsm.set_translation(Vec3::new(0.0, 0.0, 3.0));
         entity = ecs.new_entity();
         ecs.add_component(
             entity,
             GraphicsComponent {
                 mesh: square,
-                texture: tex,
+                textures: set,
             },
         );
         ecs.add_component(entity, tsm);
@@ -84,10 +60,11 @@ async fn run(mut ecs: ECS) {
 
             ecs.get_component_mut::<TransformsComponent>(entity)
                 .unwrap()
-                .set_translation(Vec3::new(0.0, 0.0, 1.0));
+                .set_rotation(Quat::from_rotation_y(count as f32 / 500.0));
+            ecs.get_component_mut::<TransformsComponent>(entity)
+                .unwrap()
+                .set_translation(Vec3::new(0.0, (count / 100.0).cos() as f32 / 1.0, 3.0));
             let gfx = ecs.get_system_mut::<GraphicSystem>().unwrap();
-            gfx.camera
-                .set_rotation(Quat::from_rotation_x((count / 200.0) as f32));
             match gfx.feedback() {
                 Ok(_) => {}
                 Err(wgpu::SurfaceError::Lost) => gfx.resize(gfx.size),
@@ -122,35 +99,35 @@ async fn run(mut ecs: ECS) {
 fn main() {
     pretty_env_logger::init();
 
-    let mut client = Client::new("127.0.0.1:50000").unwrap();
-    let _peer = Client::new("127.0.0.1:50001").unwrap();
-    client.request_game("127.0.0.1:50001").unwrap();
-    thread::sleep(Duration::from_secs(2));
+    //let mut client = Client::new("127.0.0.1:50000").unwrap();
+    //let _peer = Client::new("127.0.0.1:50001").unwrap();
+    //client.request_game("127.0.0.1:50001").unwrap();
+    //thread::sleep(Duration::from_secs(2));
 
-    //let mut ecs = ECS::new();
-    //ecs.register_component::<PositionComponent>();
-    //ecs.register_system(GravitySystem { g: 4.0 }, "gravity");
-    //ecs.register_system(
-    //    CenterSystem {
-    //        res: PositionComponent {
-    //            x: 0.0,
-    //            y: 0.0,
-    //            z: 0.0,
-    //        },
-    //    },
-    //    "gravity",
-    //);
-    //ecs.register_system(LoggingSystem {}, "log");
+    let mut ecs = ECS::new();
+    ecs.register_component::<PositionComponent>();
+    ecs.register_system(GravitySystem { g: 4.0 }, "gravity");
+    ecs.register_system(
+        CenterSystem {
+            res: PositionComponent {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        },
+        "gravity",
+    );
+    ecs.register_system(LoggingSystem {}, "log");
 
-    //ecs.add_entity(owned_entity! {
-    //    PositionComponent {
-    //        x: 0.0, y: 0.0, z: 1.0
-    //    }
-    //});
+    ecs.add_entity(owned_entity! {
+        PositionComponent {
+            x: 0.0, y: 0.0, z: 1.0
+        }
+    });
 
-    //ecs.run_systems("log");
-    //ecs.run_systems("gravity");
-    //ecs.run_systems("log");
+    ecs.run_systems("log");
+    ecs.run_systems("gravity");
+    ecs.run_systems("log");
 
-    //pollster::block_on(run(ecs));
+    pollster::block_on(run(ecs));
 }

@@ -23,29 +23,13 @@ use crate::{chess::message::Error, numeric_enum};
 
 use self::{
     message::{Message, Player, SignedMessage},
-    serialization::{Deserialize, Serialize},
+    serialization::{Deserialize, Serialize}, game::Color,
 };
 
 pub mod message;
 pub mod numeric_enum;
 pub mod serialization;
-
-numeric_enum! {
-    pub enum Color: u8 {
-        Black = 0,
-        White = 1
-    }
-}
-
-impl Color {
-    pub fn new_random() -> Self {
-        if rand::random() {
-            Color::Black
-        } else {
-            Color::White
-        }
-    }
-}
+pub mod game;
 
 #[derive(Clone)]
 struct Game {

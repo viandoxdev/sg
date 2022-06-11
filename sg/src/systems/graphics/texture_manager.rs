@@ -9,8 +9,6 @@ slotmap::new_key_type! {
     pub struct TextureSet;
 }
 
-// Late night coding here, so RefCell it'll be (for now, or forever)
-
 pub struct TextureManager {
     textures: SlotMap<TextureHandle, wgpu::TextureView>,
     /// All sets existing in the TextureManager (mapped to their textures)
@@ -57,7 +55,7 @@ impl TextureManager {
         self.add_texture(tex, set)
     }
 
-    pub fn add_depth_teture(
+    pub fn add_depth_texture(
         &mut self,
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
@@ -152,7 +150,7 @@ impl TextureManager {
     // Ref<wgpu::BindGroup>. Data races shouldn't happen unless textures of a bound set are changed
     // in the middle of a draw call (or its recording).
     // TODO: Make this safe ?
-    fn bindgroup(&self, device: &wgpu::Device, set: TextureSet) -> &wgpu::BindGroup {
+    pub fn get_bindgroup(&self, device: &wgpu::Device, set: TextureSet) -> &wgpu::BindGroup {
         // There's no way this'll ever fail... Right ?
         let bindgroups = unsafe { &mut *self.cache_bind_groups.get() };
         if !bindgroups.contains_key(set) {
@@ -191,6 +189,9 @@ impl TextureManager {
     pub fn get_set_of_texture(&self, tex: TextureHandle) -> Option<TextureSet> {
         Some(*self.textures_set.get(tex)?)
     }
+    pub fn get_index_of_texture(&self, tex: TextureHandle) -> Option<usize> {
+        self.sets.get(self.get_set_of_texture(tex)?)?.iter().position(|a| *a == tex)
+    }
 
     pub fn remove_texture(&mut self, tex: TextureHandle) -> Result<wgpu::TextureView> {
         let res = self
@@ -213,24 +214,45 @@ impl TextureManager {
         self.cache_bind_groups.get_mut().remove(set); // delete cached bind group as it is no longer valid and needs to be recreated
         Ok(res)
     }
-
-    pub fn get_bindgroup(
+    pub fn create_single_color_texture(
         &self,
         device: &wgpu::Device,
-        tex: TextureHandle,
-    ) -> (&wgpu::BindGroup, u32) {
-        let set = self
-            .get_set_of_texture(tex)
-            .expect("Trying to bind bindgroup of unknown texture");
-        let index = self
-            .sets
-            .get(set)
-            .unwrap()
-            .iter()
-            .position(|handle| *handle == tex)
-            .unwrap();
-        let bind_group = self.bindgroup(device, set);
-        (bind_group, index as u32)
+        queue: &wgpu::Queue,
+        color: [u8; 4]
+    ) -> wgpu::TextureView {
+        let size = wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        };
+
+        let gtex = device.create_texture(&wgpu::TextureDescriptor {
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            label: Some("TextureManager texture"),
+        });
+
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &gtex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(&color),
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: std::num::NonZeroU32::new(4),
+                rows_per_image: std::num::NonZeroU32::new(1),
+            },
+            size,
+        );
+
+        gtex.create_view(&wgpu::TextureViewDescriptor::default())
     }
 
     pub fn create_texture(

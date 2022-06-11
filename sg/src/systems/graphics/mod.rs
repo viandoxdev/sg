@@ -1,6 +1,9 @@
+use std::lazy::OnceCell;
+
 use anyhow::Result;
 use ecs::{system_pass, System};
-use wgpu::include_wgsl;
+use glam::{Mat3, Mat3A, Vec3, Vec4, Vec2};
+use wgpu::{include_wgsl, util::{DeviceExt, BufferInitDescriptor}};
 use winit::window::Window;
 
 use crate::components::{GraphicsComponent, TransformsComponent};
@@ -8,18 +11,20 @@ use crate::components::{GraphicsComponent, TransformsComponent};
 use self::{
     camera::Camera,
     mesh_manager::MeshManager,
-    texture_manager::{TextureHandle, TextureManager},
+    texture_manager::{TextureHandle, TextureManager}, g_buffer::GBuffer,
 };
 
 pub mod camera;
 pub mod mesh_manager;
 pub mod texture_manager;
+pub mod g_buffer;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
-    pub position: [f32; 3],
-    pub tex_coords: [f32; 2],
+    pub position: Vec3,
+    pub normal: Vec3,
+    pub tex_coords: Vec2,
 }
 impl Vertex {
     fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
@@ -33,13 +38,47 @@ impl Vertex {
                     format: wgpu::VertexFormat::Float32x3,
                 },
                 wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    offset: std::mem::size_of::<Vec3>() as wgpu::BufferAddress,
                     shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: 2 * std::mem::size_of::<Vec3>() as wgpu::BufferAddress,
+                    shader_location: 2,
                     format: wgpu::VertexFormat::Float32x2,
                 },
             ],
         }
     }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct DiretionalLight {
+    direction: Vec3,
+    color: Vec4
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct PointLight {
+    position: Vec3,
+    color: Vec4
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct SpotLight {
+    position: Vec3,
+    direction: Vec3,
+    cut_off: f32,
+    color: Vec4
+}
+
+pub enum Light {
+    Directional(DiretionalLight),
+    Point(PointLight),
+    Spot(SpotLight),
 }
 
 pub struct GraphicSystem {
@@ -49,8 +88,9 @@ pub struct GraphicSystem {
     surface: wgpu::Surface,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
+    geometry_pipeline: wgpu::RenderPipeline,
     feedback: Result<(), wgpu::SurfaceError>,
-    depth_texture: TextureHandle,
+    g_buffer: GBuffer,
     pub camera: Camera,
     pub mesh_manager: MeshManager,
     pub texture_manager: TextureManager,
@@ -81,21 +121,49 @@ impl System for GraphicSystem {
 
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("gfx render pass"),
-                    color_attachments: &[wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 0.4,
-                                g: 0.8,
-                                b: 0.3,
-                                a: 1.0,
-                            }),
-                            store: true,
+                    color_attachments: &[
+                        wgpu::RenderPassColorAttachment {
+                            view: &self.g_buffer.albedo_tex,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 0.0,
+                                    g: 0.0,
+                                    b: 0.0,
+                                    a: 1.0,
+                                }),
+                                store: true,
+                            },
                         },
-                    }],
+                        wgpu::RenderPassColorAttachment {
+                            view: &self.g_buffer.position_tex,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 0.0,
+                                    g: 0.0,
+                                    b: 0.0,
+                                    a: 0.0,
+                                }),
+                                store: true,
+                            },
+                        },
+                        wgpu::RenderPassColorAttachment {
+                            view: &self.g_buffer.normal_tex,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 0.0,
+                                    g: 0.0,
+                                    b: 0.0,
+                                    a: 0.0,
+                                }),
+                                store: true,
+                            },
+                        },
+                    ],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: self.texture_manager.get_view(self.depth_texture).unwrap(),
+                        view: &self.g_buffer.depth_tex,
                         depth_ops: Some(wgpu::Operations {
                             load: wgpu::LoadOp::Clear(1.0),
                             store: true,
@@ -114,32 +182,51 @@ impl System for GraphicSystem {
                         .get(gfx.mesh)
                         .unwrap_or_else(|| panic!("Unknown mesh on {id}"));
 
-                    let (tex_bindgroup, index) = self
+                    let tex_bindgroup = self
                         .texture_manager
-                        .get_bindgroup(&self.device, gfx.texture);
+                        .get_bindgroup(&self.device, gfx.textures);
                     let cam_bindgroup = self.camera.get_bind_group(&self.device);
 
-                    render_pass.set_vertex_buffer(0, mesh.verticies.slice(..));
+                    render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                     render_pass
-                        .set_index_buffer(mesh.indicies.slice(..), wgpu::IndexFormat::Uint16);
+                        .set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
                     render_pass.set_bind_group(0, tex_bindgroup, &[]);
                     render_pass.set_bind_group(1, cam_bindgroup, &[]);
-                    log::debug!(
-                        "TEST {}",
-                        bytemuck::cast_slice::<f32, u8>(tsm.mat().as_ref()).len()
-                    );
                     render_pass.set_push_constants(
                         wgpu::ShaderStages::VERTEX,
                         0,
-                        bytemuck::cast_slice(tsm.mat().as_ref()),
+                        bytemuck::cast_slice(&[
+                            tsm.mat(),
+                            tsm.mat().inverse().transpose(),
+                        ])
                     );
-                    render_pass.set_push_constants(
-                        wgpu::ShaderStages::FRAGMENT,
-                        64,
-                        &index.to_be_bytes(),
-                    );
-                    render_pass.draw_indexed(0..mesh.num_indicies, 0, 0..1);
+                    render_pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
                 }
+
+                drop(render_pass);
+                // begin new render pass
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Render pass"),
+                    color_attachments: &[
+                        wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 0.0,
+                                    g: 0.0,
+                                    b: 0.0,
+                                    a: 1.0,
+                                }),
+                                store: true,
+                            },
+                        }
+                    ],
+                    depth_stencil_attachment: None,
+                });
+
+                render_pass.set_bind_group(0, &self.g_buffer.bindgroup, &[]);
+                render_pass.draw(0..3, 0..1);
 
                 drop(render_pass);
 
@@ -167,8 +254,9 @@ impl GraphicSystem {
             })
             .await
             .unwrap();
+        println!("{:?}", adapter.get_info());
         let limits = wgpu::Limits {
-            max_push_constant_size: 68,
+            max_push_constant_size: 128,
             ..Default::default()
         };
         let (device, queue) = adapter
@@ -194,51 +282,60 @@ impl GraphicSystem {
         };
         surface.configure(&device, &config);
 
-        let shader = device.create_shader_module(&include_wgsl!("shader.wgsl"));
+        let g_buffer_shader = device.create_shader_module(&include_wgsl!("g_buffer.wgsl"));
+        let render_shader = device.create_shader_module(&include_wgsl!("shader.wgsl"));
 
         let model_push_constant_range = wgpu::PushConstantRange {
             stages: wgpu::ShaderStages::VERTEX,
-            range: 0..64,
-        };
-        let texture_push_constant_range = wgpu::PushConstantRange {
-            stages: wgpu::ShaderStages::FRAGMENT,
-            range: 64..68,
+            range: 0..128,
         };
 
-        // create now to get the bind group layout.
         let mut texture_manager = TextureManager::new();
-
-        let set = texture_manager.add_set();
-        let depth_texture = texture_manager
-            .add_depth_teture(&device, &config, set)
-            .expect("Error when creating depth texture");
 
         let mut camera = Camera::new();
         camera.set_aspect(size.width as f32 / size.height as f32);
         let tm_bind_group_layout = texture_manager.layout(&device);
         let cam_bind_group_layout = camera.get_bind_group_layout(&device);
+        let geometry_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("geometry pipeline layout"),
+                bind_group_layouts: &[tm_bind_group_layout, cam_bind_group_layout],
+                push_constant_ranges: &[model_push_constant_range],
+            });
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("render pipeline layout"),
-                bind_group_layouts: &[tm_bind_group_layout, cam_bind_group_layout],
-                push_constant_ranges: &[model_push_constant_range, texture_push_constant_range],
+                bind_group_layouts: &[],
+                push_constant_ranges: &[]
             });
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
-            layout: Some(&render_pipeline_layout),
+        let geometry_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Geomtry Pipeline"),
+            layout: Some(&geometry_pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
+                module: &g_buffer_shader,
                 entry_point: "vs_main",
                 buffers: &[Vertex::desc()],
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
+                module: &g_buffer_shader,
                 entry_point: "fs_main",
-                targets: &[wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                }],
+                targets: &[
+                    wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    },
+                    wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba32Float,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    },
+                    wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba32Float,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }
+                ],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -263,6 +360,48 @@ impl GraphicSystem {
             },
             multiview: None,
         });
+        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Render pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &render_shader,
+                entry_point: "vs_main",
+                buffers: &[]
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &render_shader,
+                entry_point: "fs_main",
+                targets: &[
+                    wgpu::ColorTargetState {
+                        format: config.format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    },
+                ],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Cw,
+                cull_mode: Some(wgpu::Face::Back),
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+        });
+
+        let g_buffer = GBuffer::new(&device, wgpu::Extent3d {
+            width: config.width,
+            height: config.height,
+            depth_or_array_layers: 1,
+        }, &[]);
 
         Self {
             surface,
@@ -270,12 +409,13 @@ impl GraphicSystem {
             queue,
             config,
             size,
+            geometry_pipeline,
             render_pipeline,
             feedback: Ok(()),
-            depth_texture,
             mesh_manager: MeshManager::new(),
             texture_manager,
             camera,
+            g_buffer,
         }
     }
     pub fn feedback(&self) -> Result<(), wgpu::SurfaceError> {
@@ -288,13 +428,11 @@ impl GraphicSystem {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
-            let tex = self
-                .texture_manager
-                .create_depth_texture(&self.device, &self.config);
-            self.texture_manager
-                .replace_texture(self.depth_texture, tex) // update depth texture
-                .map_err(|_| log::error!("Error when recreating depth texture"))
-                .ok(); // warn if error
+            self.g_buffer.resize(&self.device, wgpu::Extent3d {
+                width: new_size.width,
+                height: new_size.height,
+                depth_or_array_layers: 1,
+            });
             self.camera
                 .set_aspect(new_size.width as f32 / new_size.height as f32);
         }

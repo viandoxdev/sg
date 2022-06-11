@@ -10,7 +10,7 @@ use rsa::{
 };
 use uuid::Uuid;
 
-use super::message::{Error, Message, Player, Signature, SignedMessage};
+use super::{message::{Error, Message, Player, Signature, SignedMessage}, game::{Piece, PieceKind, Color}};
 
 pub trait Serialize {
     fn serialize(&self, bytes: &mut Vec<u8>) -> Result<()>;
@@ -229,6 +229,22 @@ impl Deserialize for SignedMessage {
         Ok(Self {
             message: Message::deserialize(bytes)?,
             signature: Signature::deserialize(bytes)?,
+        })
+    }
+}
+
+impl Serialize for Piece {
+    fn serialize(&self, bytes: &mut Vec<u8>) -> Result<()> {
+        self.kind.serialize(bytes)?;
+        self.color.serialize(bytes)
+    }
+}
+
+impl Deserialize for Piece {
+    fn deserialize(bytes: &mut Cursor<Vec<u8>>) -> Result<Self> {
+        Ok(Self {
+            kind: PieceKind::deserialize(bytes)?,
+            color: Color::deserialize(bytes)?
         })
     }
 }
