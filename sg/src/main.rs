@@ -3,15 +3,15 @@
 #![allow(incomplete_features)]
 #![allow(dead_code)]
 
-use glam::{Quat, Vec3};
+use glam::{Quat, Vec3, Vec4};
 use systems::graphics::mesh_manager::{Mesh, Primitives};
 use systems::{LoggingSystem, GravitySystem, CenterSystem};
-use systems::graphics::{GraphicSystem, Vertex};
+use systems::graphics::{GraphicSystem, Vertex, Light, PointLight};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 
-use components::{GraphicsComponent, TransformsComponent, PositionComponent};
+use components::{GraphicsComponent, TransformsComponent, PositionComponent, LightComponent};
 use ecs::{ECS, owned_entity};
 
 mod chess;
@@ -26,6 +26,7 @@ async fn run(mut ecs: ECS) {
     ecs.register_system(gfx, "graphics");
     ecs.register_component::<TransformsComponent>();
     ecs.register_component::<GraphicsComponent>();
+    ecs.register_component::<LightComponent>();
 
     let entity;
 
@@ -50,6 +51,11 @@ async fn run(mut ecs: ECS) {
         );
         ecs.add_component(entity, tsm);
     }
+
+    let light = ecs.new_entity();
+    ecs.add_component(light, LightComponent {
+        light: Light::Point(PointLight::new(Vec3::new(0.0, 0.0, 2.0), Vec4::new(1.0, 1.0, 1.0, 1.0)))
+    });
 
     let mut count = 0f64;
 

@@ -1,12 +1,13 @@
-use std::lazy::OnceCell;
+use std::{lazy::OnceCell, collections::{HashSet, HashMap}, path::Path};
 
 use anyhow::Result;
-use ecs::{system_pass, System};
+use ecs::{system_pass, System, SystemRequirements, filter_components};
 use glam::{Mat3, Mat3A, Vec3, Vec4, Vec2};
+use uuid::Uuid;
 use wgpu::{include_wgsl, util::{DeviceExt, BufferInitDescriptor}};
 use winit::window::Window;
 
-use crate::components::{GraphicsComponent, TransformsComponent};
+use crate::components::{GraphicsComponent, TransformsComponent, LightComponent};
 
 use self::{
     camera::Camera,
@@ -56,6 +57,7 @@ impl Vertex {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct DiretionalLight {
     direction: Vec3,
+    padding: f32,
     color: Vec4
 }
 
@@ -63,6 +65,7 @@ pub struct DiretionalLight {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PointLight {
     position: Vec3,
+    padding: f32,
     color: Vec4
 }
 
@@ -70,15 +73,77 @@ pub struct PointLight {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SpotLight {
     position: Vec3,
+    padding: f32,
     direction: Vec3,
     cut_off: f32,
     color: Vec4
 }
 
+impl DiretionalLight {
+    pub fn new(direction: Vec3, color: Vec4) -> Self { Self {
+        direction,
+        padding: 0.0,
+        color,
+    }}
+}
+
+impl PointLight {
+    pub fn new(position: Vec3, color: Vec4) -> Self { Self {
+        position,
+        padding: 0.0,
+        color,
+    }}
+}
+
+impl SpotLight {
+    pub fn new(position: Vec3, direction: Vec3, cut_off: f32, color: Vec4) -> Self { Self {
+        position,
+        padding: 0.0,
+        direction,
+        cut_off,
+        color,
+    }}
+}
+
+#[derive(Clone, Copy)]
 pub enum Light {
     Directional(DiretionalLight),
     Point(PointLight),
     Spot(SpotLight),
+}
+
+pub struct Shader {
+    name: &'static str,
+    source: String,
+    constants: HashMap<&'static str, String>
+}
+
+impl Shader {
+    pub fn from_file(path: impl AsRef<Path>, name: &'static str) -> Self {
+        Self::new(std::fs::read_to_string(path).expect("Error on file read"), name)
+    }
+    pub fn new(source: String, name: &'static str) -> Self {
+        Self {
+            name,
+            source,
+            constants: HashMap::new(),
+        }
+    }
+    pub fn set(&mut self, key: &'static str, value: impl ToString) {
+        self.constants.insert(key, value.to_string());
+    }
+    pub fn module(&self, device: &wgpu::Device) {
+        let mut source = self.source.to_owned();
+        let mut pat = "{{_}}".to_owned();
+        for (p, val) in self.constants {
+            pat.replace_range(2..(pat.len() - 2), p);
+            source = source.replace(&pat, &val);
+        }
+        device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+            label: Some(self.name),
+        });
+    }
 }
 
 pub struct GraphicSystem {
@@ -87,10 +152,13 @@ pub struct GraphicSystem {
     pub queue: wgpu::Queue,
     surface: wgpu::Surface,
     config: wgpu::SurfaceConfiguration,
+    geometry_shader: Shader,
+    render_shader: Shader,
     render_pipeline: wgpu::RenderPipeline,
     geometry_pipeline: wgpu::RenderPipeline,
     feedback: Result<(), wgpu::SurfaceError>,
     g_buffer: GBuffer,
+    lights_cache: HashSet<Uuid>,
     pub camera: Camera,
     pub mesh_manager: MeshManager,
     pub texture_manager: TextureManager,
@@ -100,11 +168,32 @@ impl System for GraphicSystem {
     fn name() -> &'static str {
         "GraphicSystem"
     }
-    #[system_pass]
-    fn pass_many(
-        &mut self,
-        entities: HashMap<Uuid, (GraphicsComponent, Option<TransformsComponent>)>,
-    ) {
+    fn pass<'a>(&mut self, mut entities: ecs::EntitiesBorrow<'a>) {
+        let renderables = filter_components!(entities
+            => GraphicsComponent;
+            ? TransformsComponent;
+        );
+        let lights = filter_components!(entities
+            => LightComponent;
+        );
+
+        let mut lights_changed = lights.len() != self.lights_cache.len();
+        for id in lights.keys() {
+            if !self.lights_cache.contains(id) {
+                lights_changed = true;
+                break;
+            }
+        }
+
+        if lights_changed {
+            // update the cache
+            self.lights_cache.clear();
+            self.lights_cache.extend(lights.keys());
+            // update the g_buffer
+            let lights = lights.into_iter().map(|(_, c)| c.light).collect::<Vec<_>>();
+            self.g_buffer.update_lights(&self.device, &lights);
+        }
+
         self.feedback = Ok(());
 
         let output = self.surface.get_current_texture();
@@ -171,11 +260,11 @@ impl System for GraphicSystem {
                         stencil_ops: None,
                     }),
                 });
-                render_pass.set_pipeline(&self.render_pipeline);
+                render_pass.set_pipeline(&self.geometry_pipeline);
 
                 self.camera.update(&self.device, &self.queue);
 
-                for (id, (gfx, tsm)) in entities {
+                for (id, (gfx, tsm)) in renderables {
                     let tsm = tsm.cloned().unwrap_or_default();
                     let mesh = self
                         .mesh_manager
@@ -225,6 +314,7 @@ impl System for GraphicSystem {
                     depth_stencil_attachment: None,
                 });
 
+                render_pass.set_pipeline(&self.render_pipeline);
                 render_pass.set_bind_group(0, &self.g_buffer.bindgroup, &[]);
                 render_pass.draw(0..3, 0..1);
 
@@ -241,6 +331,9 @@ impl System for GraphicSystem {
 }
 
 impl GraphicSystem {
+    fn make_pipelines() -> (wgpu::RenderPipeline, wgpu::RenderPipeline) {
+
+    }
     pub async fn new(window: &Window) -> Self {
         let size = window.inner_size();
 
@@ -282,15 +375,21 @@ impl GraphicSystem {
         };
         surface.configure(&device, &config);
 
-        let g_buffer_shader = device.create_shader_module(&include_wgsl!("g_buffer.wgsl"));
-        let render_shader = device.create_shader_module(&include_wgsl!("shader.wgsl"));
+        let geometry_shader = Shader::from_file("g_buffer.wgsl", "geometry shader");
+        let render_shader = Shader::from_file("shader.wgsl", "render shader");
 
         let model_push_constant_range = wgpu::PushConstantRange {
             stages: wgpu::ShaderStages::VERTEX,
             range: 0..128,
         };
 
-        let mut texture_manager = TextureManager::new();
+        let texture_manager = TextureManager::new();
+        let g_buffer = GBuffer::new(&device, wgpu::Extent3d {
+            width: config.width,
+            height: config.height,
+            depth_or_array_layers: 1,
+        }, &[]);
+
 
         let mut camera = Camera::new();
         camera.set_aspect(size.width as f32 / size.height as f32);
@@ -305,7 +404,7 @@ impl GraphicSystem {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("render pipeline layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[&g_buffer.bind_group_layout],
                 push_constant_ranges: &[]
             });
         let geometry_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -382,8 +481,8 @@ impl GraphicSystem {
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Cw,
-                cull_mode: Some(wgpu::Face::Back),
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 unclipped_depth: false,
                 conservative: false,
@@ -397,12 +496,6 @@ impl GraphicSystem {
             multiview: None,
         });
 
-        let g_buffer = GBuffer::new(&device, wgpu::Extent3d {
-            width: config.width,
-            height: config.height,
-            depth_or_array_layers: 1,
-        }, &[]);
-
         Self {
             surface,
             device,
@@ -413,6 +506,7 @@ impl GraphicSystem {
             render_pipeline,
             feedback: Ok(()),
             mesh_manager: MeshManager::new(),
+            lights_cache: HashSet::new(),
             texture_manager,
             camera,
             g_buffer,

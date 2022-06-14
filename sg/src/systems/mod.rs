@@ -44,15 +44,9 @@ impl System for CenterSystem {
 pub struct LoggingSystem {}
 
 impl System for LoggingSystem {
-    fn pass(
-        &mut self,
-        components: &mut std::collections::HashMap<
-            std::any::TypeId,
-            std::collections::HashMap<uuid::Uuid, Box<dyn ecs::Component>>,
-        >,
-    ) {
+    fn pass<'a>(&mut self, mut entities: ecs::EntitiesBorrow<'a>) {
         let reqs = SystemRequirements::new().add::<PositionComponent>();
-        let entities = reqs.filter(components);
+        let entities = reqs.filter(&mut entities);
         for (_, mut comps) in entities {
             let pos = downcast_component::<PositionComponent>(&mut comps).unwrap();
 

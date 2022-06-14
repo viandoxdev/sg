@@ -85,8 +85,14 @@ impl ECS {
                 .insert(category, vec![TypeId::of::<T>()]);
         }
     }
+    pub fn borrow_entities(&mut self) -> EntitiesBorrow {
+        EntitiesBorrow {
+            inner: self.components.iter_mut().map(|(ty, map)| (*ty, map.iter_mut().map(|(id, e)| (*id, e)).collect())).collect()
+        }
+    }
     pub fn run_systems<S: ToString>(&mut self, category: S) {
         let category = category.to_string();
+
         let cat = self
             .systems_categories
             .get(&category)
@@ -97,7 +103,11 @@ impl ECS {
                 .get_mut(system_id)
                 .expect("Unknown system in category {category}");
             system.pre();
-            system.pass(&mut self.components);
+            // Not using self.borrow_entities as this method borrows the entire ecs, here rust
+            // understands that I only borrow the components field.
+            system.pass(EntitiesBorrow {
+                inner: self.components.iter_mut().map(|(ty, map)| (*ty, map.iter_mut().map(|(id, e)| (*id, e)).collect())).collect()
+            });
             system.post();
         }
     }
@@ -127,6 +137,10 @@ impl Default for ECS {
     fn default() -> Self {
         Self::new()
     }
+}
+
+pub struct EntitiesBorrow<'a> {
+    inner: HashMap<TypeId, HashMap<Uuid, &'a mut Box<dyn Component>>>
 }
 
 pub struct OwnedEntity {
@@ -190,7 +204,7 @@ pub trait System: Any {
     {
         "<UNAMED_SYSTEM>"
     }
-    fn pass(&mut self, _components: &mut HashMap<TypeId, HashMap<Uuid, Box<dyn Component>>>) {}
+    fn pass<'a>(&mut self, _entities: EntitiesBorrow<'a>) {}
     fn pre(&mut self) {}
     fn post(&mut self) {}
     fn register(&mut self) {}
@@ -223,8 +237,9 @@ impl SystemRequirements {
     }
     pub fn filter<'a>(
         &self,
-        entities: &'a mut HashMap<TypeId, HashMap<Uuid, Box<dyn Component + 'static>>>,
+        entities: &mut EntitiesBorrow<'a>,
     ) -> HashMap<Uuid, HashMap<TypeId, &'a mut Box<dyn Component + 'static>>> {
+        let entities = &mut entities.inner;
         let mut required_components = entities
             .iter()
             .filter(|(tid, _)| self.is_required(tid))
@@ -238,28 +253,51 @@ impl SystemRequirements {
             })
             .copied()
             .collect::<Vec<Uuid>>();
-        let mut entities_ref = entities
-            .iter_mut()
-            .map(|(tid, map)| (tid, map.iter_mut().collect::<HashMap<_, _>>()))
-            .collect::<HashMap<_, _>>();
         uuids
-            .iter()
+            .into_iter()
             .map(|uuid| {
                 (
-                    *uuid,
+                    uuid,
                     HashMap::from_iter(self.reqs.keys().filter_map(|tid| {
                         Some((
                             *tid,
-                            entities_ref
+                            entities
                                 .get_mut(tid)
                                 .expect("Required unregisterd component")
-                                .remove(uuid)?,
+                                .remove(&uuid)?,
                         ))
                     })),
                 )
             })
             .collect()
     }
+}
+
+#[macro_export]
+macro_rules! filter_components {
+    ($comps:ident => $t:ty$(;)?) => {
+        ecs::SystemRequirements::new()
+            .add::<$t>()
+            .filter(&mut $comps)
+            .into_iter()
+            .map(|(id, mut e)| (id, ecs::downcast_component::<$t>(&mut e).unwrap()))
+            .collect::<std::collections::HashMap<_, _>>()
+    };
+    ($comps:ident => $($t:ty),+$(;)?) => {
+        filter_components!($comps => $($t),+; ?;)
+    };
+    ($comps:ident => $($t:ty),+; ? $($o:ty),*;) => {
+        ecs::SystemRequirements::new()
+            $(.add::<$t>())+
+            $(.add_optional::<$o>())*
+            .filter(&mut $comps)
+            .into_iter()
+            .map(|(id, mut e)| (id, (
+                $(ecs::downcast_component::<$t>(&mut e).unwrap()),+,
+                $(ecs::downcast_component::<$o>(&mut e)),*
+            )))
+            .collect::<std::collections::HashMap<_, _>>()
+    };
 }
 
 impl Default for SystemRequirements {

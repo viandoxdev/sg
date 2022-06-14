@@ -174,10 +174,10 @@ pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
         let block = *fnc.block;
 
         return quote! {
-            fn pass(&mut self, __components: &mut ::std::collections::HashMap<::std::any::TypeId, ::std::collections::HashMap<uuid::Uuid, Box<dyn ecs::Component>>>) {
+            fn pass(&mut self, mut __entities: ecs::EntitiesBorrow) {
                 let __reqs = ecs::SystemRequirements::new()
                 #(#reqs)*;
-                let __entities = __reqs.filter(__components);
+                let __entities = __reqs.filter(&mut __entities);
                 for (__id, mut __entity) in __entities {
                     #(#lets)*
                     #block;
@@ -225,10 +225,10 @@ pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
             let block = *fnc.block;
 
             return quote! {
-                fn pass(&mut self, __components: &mut ::std::collections::HashMap<::std::any::TypeId, ::std::collections::HashMap<uuid::Uuid, Box<dyn ecs::Component>>>) {
+                fn pass(&mut self, mut __entities: ecs::EntitiesBorrow) {
                     let __reqs = ecs::SystemRequirements::new()
                         #(#reqs)*;
-                    let mut __entities = __reqs.filter(__components);
+                    let mut __entities = __reqs.filter(&mut __entities);
                     let #entities_pat = __entities.into_iter().map(|(id, mut e)| (id, (#(#tuple),*))).collect::<::std::collections::HashMap<_, _>>();
                     #block;
                 }

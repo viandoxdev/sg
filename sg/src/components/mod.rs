@@ -2,7 +2,7 @@ use ecs::Component;
 use glam::{Mat4, Quat, Vec3};
 use image::DynamicImage;
 
-use crate::systems::graphics::{mesh_manager::MeshHandle, texture_manager::TextureSet};
+use crate::systems::graphics::{mesh_manager::MeshHandle, texture_manager::TextureSet, Light};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PositionComponent {
@@ -14,6 +14,10 @@ pub struct PositionComponent {
 pub struct GraphicsComponent {
     pub(crate) mesh: MeshHandle,
     pub(crate) textures: TextureSet,
+}
+#[derive(Clone, Copy)]
+pub struct LightComponent {
+    pub light: Light
 }
 #[derive(Clone)]
 pub struct TransformsComponent {
@@ -60,3 +64,4 @@ impl TransformsComponent {
 impl Component for PositionComponent {}
 impl Component for TransformsComponent {}
 impl Component for GraphicsComponent {}
+impl Component for LightComponent {}

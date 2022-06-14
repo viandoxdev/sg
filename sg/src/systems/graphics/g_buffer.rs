@@ -1,6 +1,11 @@
+use std::num::NonZeroU32;
+use std::num::NonZeroU64;
+
 use crate::systems::graphics::Light;
 use wgpu::util::BufferInitDescriptor;
 use wgpu::util::DeviceExt;
+
+use super::PointLight;
 
 
 
@@ -32,40 +37,51 @@ impl GBuffer {
         (
             tex("albedo", wgpu::TextureFormat::Rgba8Unorm),
             tex("position", wgpu::TextureFormat::Rgba32Float),
-            tex("normal", wgpu::TextureFormat::Rgba16Float),
+            tex("normal", wgpu::TextureFormat::Rgba32Float),
             tex("depth", wgpu::TextureFormat::Depth32Float),
         )
     }
-    fn update_bindgroup(&mut self, device: &wgpu::Device) {
-        self.bindgroup = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    fn make_bindgroup(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        albedo_tex: &wgpu::TextureView,
+        position_tex: &wgpu::TextureView,
+        normal_tex: &wgpu::TextureView,
+        depth_tex: &wgpu::TextureView,
+        directional_lights_buffer: &wgpu::Buffer,
+        point_lights_buffer: &wgpu::Buffer,
+        spot_lights_buffer: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("g buffer bindgroup"),
-            layout: &self.bind_group_layout,
+            layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler)
+                    resource: wgpu::BindingResource::Sampler(sampler)
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&self.albedo_tex)
+                    resource: wgpu::BindingResource::TextureView(albedo_tex)
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&self.position_tex)
+                    resource: wgpu::BindingResource::TextureView(position_tex)
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&self.normal_tex)
+                    resource: wgpu::BindingResource::TextureView(normal_tex)
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&self.depth_tex)
+                    resource: wgpu::BindingResource::TextureView(depth_tex)
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         size: None,
-                        buffer: &self.directional_lights_buffer,
+                        buffer: directional_lights_buffer,
                         offset: 0,
                     })
                 },
@@ -73,7 +89,7 @@ impl GBuffer {
                     binding: 6,
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         size: None,
-                        buffer: &self.point_lights_buffer,
+                        buffer: point_lights_buffer,
                         offset: 0,
                     })
                 },
@@ -81,12 +97,26 @@ impl GBuffer {
                     binding: 7,
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         size: None,
-                        buffer: &self.spot_lights_buffer,
+                        buffer: spot_lights_buffer,
                         offset: 0,
                     })
                 },
             ]
-        });
+        })
+    }
+    fn update_bindgroup(&mut self, device: &wgpu::Device) {
+        self.bindgroup = Self::make_bindgroup(
+            device,
+            &self.bind_group_layout,
+            &self.sampler,
+            &self.albedo_tex,
+            &self.position_tex,
+            &self.normal_tex,
+            &self.depth_tex,
+            &self.directional_lights_buffer,
+            &self.point_lights_buffer,
+            &self.spot_lights_buffer,
+        );
     }
     fn make_lights_buffer(device: &wgpu::Device, lights: &[Light]) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer) {
         let mut dlights = Vec::with_capacity(lights.len());
@@ -138,7 +168,7 @@ impl GBuffer {
                     ty: wgpu::BindingType::Texture {
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                     }
                 },
                 // position
@@ -149,7 +179,7 @@ impl GBuffer {
                     ty: wgpu::BindingType::Texture {
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                     }
                 },
                 // normals
@@ -160,7 +190,7 @@ impl GBuffer {
                     ty: wgpu::BindingType::Texture {
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                     }
                 },
                 // depth
@@ -171,7 +201,7 @@ impl GBuffer {
                     ty: wgpu::BindingType::Texture {
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Depth,
                     }
                 },
                 // directional lights
@@ -179,10 +209,11 @@ impl GBuffer {
                     count: None,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     binding: 5,
-                    ty: wgpu::BindingType::Buffer { 
+                    ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: None,
+                        min_binding_size:
+                            Some(NonZeroU64::new(std::mem::size_of::<f32>() as u64 + std::mem::size_of::<PointLight>() as u64).unwrap()),
                     }
                 },
                 // point lights
@@ -214,8 +245,8 @@ impl GBuffer {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
@@ -226,56 +257,19 @@ impl GBuffer {
             spot_lights_buffer,
         ) = Self::make_lights_buffer(device, lights);
 
-        let bindgroup = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("g buffer bindgroup"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Sampler(&sampler)
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&albedo_tex)
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&position_tex)
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&normal_tex)
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&depth_tex)
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        size: None,
-                        buffer: &directional_lights_buffer,
-                        offset: 0,
-                    })
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        size: None,
-                        buffer: &point_lights_buffer,
-                        offset: 0,
-                    })
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        size: None,
-                        buffer: &spot_lights_buffer,
-                        offset: 0,
-                    })
-                },
-            ]
-        });
+        let bindgroup = Self::make_bindgroup(
+            device,
+            &bind_group_layout,
+            &sampler,
+            &albedo_tex,
+            &position_tex,
+            &normal_tex,
+            &depth_tex,
+            &directional_lights_buffer,
+            &point_lights_buffer,
+            &spot_lights_buffer,
+        );
+
         Self {
             sampler,
             albedo_tex,
@@ -308,5 +302,6 @@ impl GBuffer {
         self.directional_lights_buffer = directional_lights_buffer;
         self.point_lights_buffer = point_lights_buffer;
         self.spot_lights_buffer = spot_lights_buffer;
+        self.update_bindgroup(device);
     }
 }
