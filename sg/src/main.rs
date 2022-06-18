@@ -6,7 +6,7 @@
 use glam::{Quat, Vec3, Vec4};
 use systems::graphics::mesh_manager::{Mesh, Primitives};
 use systems::graphics::texture_manager::SingleValue;
-use systems::graphics::{GraphicSystem, Light, PointLight};
+use systems::graphics::{GraphicSystem, Light, PointLight, Material, gltf};
 use systems::{CenterSystem, GravitySystem, LoggingSystem};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -29,38 +29,43 @@ async fn run(mut ecs: ECS) {
     ecs.register_component::<GraphicsComponent>();
     ecs.register_component::<LightComponent>();
 
+    let a = gltf::open("model.glb");
+
     let entity;
 
     {
         let gfx = ecs.get_system_mut::<GraphicSystem>().unwrap();
 
-        let mesh = Mesh::new_cube();
-        let mesh = gfx.mesh_manager.add(&gfx.device, &mesh);
+        let mesh = gfx.mesh_manager.add(&gfx.device, &Mesh::new_cube());
+        let material = {
+            let albedo = image::open("albedo.png").unwrap().flipv();
+            let albedo = gfx
+                .texture_manager
+                .add_image_texture(&gfx.device, &gfx.queue, albedo);
+            let norm = image::open("norm.png").unwrap().flipv();
+            let norm = gfx
+                .texture_manager
+                .add_image_texture(&gfx.device, &gfx.queue, norm);
+            let met = gfx.texture_manager.get_or_add_single_value_texture(
+                &gfx.device,
+                &gfx.queue,
+                SingleValue::Factor(0.0),
+            );
+            let roughness = image::open("roughness.png").unwrap().flipv();
+            let roughness = gfx
+                .texture_manager
+                .add_image_texture(&gfx.device, &gfx.queue, roughness);
+            let ao = image::open("ao.png").unwrap().flipv();
+            let ao = gfx
+                .texture_manager
+                .add_image_texture(&gfx.device, &gfx.queue, ao);
+            Material::new(albedo, Some(norm), met, roughness, Some(ao), gfx).unwrap()
+        };
 
-        let albedo = image::open("albedo.png").unwrap().flipv();
-        let albedo = gfx
-            .texture_manager
-            .add_image_texture(&gfx.device, &gfx.queue, albedo);
-        let norm = image::open("norm.png").unwrap().flipv();
-        let norm = gfx
-            .texture_manager
-            .add_image_texture(&gfx.device, &gfx.queue, norm);
-        let met = gfx.texture_manager.get_or_add_single_value_texture(
-            &gfx.device,
-            &gfx.queue,
-            SingleValue::Factor(0.0),
-        );
-        let roughness = image::open("roughness.png").unwrap().flipv();
-        let roughness = gfx
-            .texture_manager
-            .add_image_texture(&gfx.device, &gfx.queue, roughness);
-        let ao = image::open("ao.png").unwrap().flipv();
-        let ao = gfx
-            .texture_manager
-            .add_image_texture(&gfx.device, &gfx.queue, ao);
-
-        let gfc = GraphicsComponent::new(mesh, albedo, Some(norm), met, roughness, Some(ao), gfx)
-            .unwrap();
+        let gfc = GraphicsComponent {
+            mesh,
+            material,
+        };
 
         let mut tsm = TransformsComponent::new();
         tsm.set_translation(Vec3::new(0.0, 0.0, 0.0));

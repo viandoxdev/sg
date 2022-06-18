@@ -5,7 +5,7 @@ use glam::{Mat4, Quat, Vec3};
 use crate::systems::graphics::{
     mesh_manager::MeshHandle,
     texture_manager::{SingleValue, TextureHandle, TextureSet},
-    GraphicSystem, Light,
+    GraphicSystem, Light, Material,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -17,7 +17,7 @@ pub struct PositionComponent {
 
 pub struct GraphicsComponent {
     pub(crate) mesh: MeshHandle,
-    pub(crate) textures: TextureSet,
+    pub(crate) material: Material,
 }
 #[derive(Clone, Copy)]
 pub struct LightComponent {
@@ -48,78 +48,23 @@ impl TransformsComponent {
         self.matrix =
             Mat4::from_scale_rotation_translation(self.scale, self.rotate, self.translate);
     }
-    pub fn set_translation(&mut self, trans: Vec3) {
+    pub fn set_translation(&mut self, trans: Vec3) -> &mut Self {
         self.translate = trans;
         self.update();
+        self
     }
-    pub fn set_scale(&mut self, scale: Vec3) {
+    pub fn set_scale(&mut self, scale: Vec3) -> &mut Self {
         self.scale = scale;
         self.update();
+        self
     }
-    pub fn set_rotation(&mut self, rotation: Quat) {
+    pub fn set_rotation(&mut self, rotation: Quat) -> &mut Self {
         self.rotate = rotation;
         self.update();
+        self
     }
     pub fn mat(&self) -> Mat4 {
         self.matrix
-    }
-}
-
-impl GraphicsComponent {
-    pub fn new_with_values(
-        mesh: MeshHandle,
-        albedo: TextureHandle,
-        normal_map: Option<TextureHandle>,
-        metallic: f32,
-        roughness: f32,
-        ao: Option<TextureHandle>,
-        gfx: &mut GraphicSystem,
-    ) -> Result<Self> {
-        let metallic = gfx.texture_manager.get_or_add_single_value_texture(
-            &gfx.device,
-            &gfx.queue,
-            SingleValue::Factor(metallic),
-        );
-        let roughness = gfx.texture_manager.get_or_add_single_value_texture(
-            &gfx.device,
-            &gfx.queue,
-            SingleValue::Factor(roughness),
-        );
-        Self::new(mesh, albedo, normal_map, metallic, roughness, ao, gfx)
-    }
-    pub fn new(
-        mesh: MeshHandle,
-        albedo: TextureHandle,
-        normal_map: Option<TextureHandle>,
-        metallic: TextureHandle,
-        roughness: TextureHandle,
-        ao: Option<TextureHandle>,
-        gfx: &mut GraphicSystem,
-    ) -> Result<Self> {
-        let set = gfx.texture_manager.add_set();
-        let normal_map = normal_map.unwrap_or_else(|| {
-            gfx.texture_manager.get_or_add_single_value_texture(
-                &gfx.device,
-                &gfx.queue,
-                SingleValue::Normal(Vec3::new(0.0, 0.0, 1.0)),
-            )
-        });
-        let ao = ao.unwrap_or_else(|| {
-            gfx.texture_manager.get_or_add_single_value_texture(
-                &gfx.device,
-                &gfx.queue,
-                SingleValue::Factor(1.0),
-            )
-        });
-        gfx.texture_manager.add_texture_to_set(albedo, set)?;
-        gfx.texture_manager.add_texture_to_set(normal_map, set)?;
-        gfx.texture_manager.add_texture_to_set(metallic, set)?;
-        gfx.texture_manager.add_texture_to_set(roughness, set)?;
-        gfx.texture_manager.add_texture_to_set(ao, set)?;
-        Ok(Self {
-            textures: set,
-            mesh,
-        })
     }
 }
 

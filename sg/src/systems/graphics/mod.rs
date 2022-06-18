@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 use ecs::{filter_components, System};
-use glam::{Vec2, Vec3, Vec4};
+use glam::{Vec3, Vec4};
 use uuid::Uuid;
 use winit::window::Window;
 
@@ -12,8 +12,8 @@ use crate::{
 };
 
 use self::{
-    camera::Camera, g_buffer::GBuffer, mesh_manager::MeshManager, pipeline::Pipeline,
-    texture_manager::TextureManager,
+    camera::Camera, g_buffer::GBuffer, mesh_manager::{MeshManager, Vertex}, pipeline::Pipeline,
+    texture_manager::{TextureManager, TextureSet, TextureHandle, SingleValue},
 };
 
 #[macro_use] // avoid importing each and every macro
@@ -23,45 +23,7 @@ pub mod g_buffer;
 pub mod mesh_manager;
 pub mod pipeline;
 pub mod texture_manager;
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Vertex {
-    pub position: Vec3,
-    pub normal: Vec3,
-    pub tex_coords: Vec2,
-    pub tangent: Vec3,
-}
-impl Vertex {
-    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<Vec3>() as wgpu::BufferAddress,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                wgpu::VertexAttribute {
-                    offset: 2 * std::mem::size_of::<Vec3>() as wgpu::BufferAddress,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<(Vec3, Vec3, Vec2)>() as wgpu::BufferAddress,
-                    shader_location: 3,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-            ],
-        }
-    }
-}
+pub mod gltf;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -126,6 +88,66 @@ pub enum Light {
     Directional(DiretionalLight),
     Point(PointLight),
     Spot(SpotLight),
+}
+
+#[derive(Clone, Copy)]
+pub struct Material {
+    textures: TextureSet,
+}
+
+impl Material {
+    pub fn new_with_values(
+        albedo: TextureHandle,
+        normal_map: Option<TextureHandle>,
+        metallic: f32,
+        roughness: f32,
+        ao: Option<TextureHandle>,
+        gfx: &mut GraphicSystem,
+    ) -> Result<Self> {
+        let metallic = gfx.texture_manager.get_or_add_single_value_texture(
+            &gfx.device,
+            &gfx.queue,
+            SingleValue::Factor(metallic),
+        );
+        let roughness = gfx.texture_manager.get_or_add_single_value_texture(
+            &gfx.device,
+            &gfx.queue,
+            SingleValue::Factor(roughness),
+        );
+        Self::new(albedo, normal_map, metallic, roughness, ao, gfx)
+    }
+    pub fn new(
+        albedo: TextureHandle,
+        normal_map: Option<TextureHandle>,
+        metallic: TextureHandle,
+        roughness: TextureHandle,
+        ao: Option<TextureHandle>,
+        gfx: &mut GraphicSystem,
+    ) -> Result<Self> {
+        let set = gfx.texture_manager.add_set();
+        let normal_map = normal_map.unwrap_or_else(|| {
+            gfx.texture_manager.get_or_add_single_value_texture(
+                &gfx.device,
+                &gfx.queue,
+                SingleValue::Normal(Vec3::new(0.0, 0.0, 1.0)),
+            )
+        });
+        let ao = ao.unwrap_or_else(|| {
+            gfx.texture_manager.get_or_add_single_value_texture(
+                &gfx.device,
+                &gfx.queue,
+                SingleValue::Factor(1.0),
+            )
+        });
+        gfx.texture_manager.add_texture_to_set(albedo, set)?;
+        gfx.texture_manager.add_texture_to_set(normal_map, set)?;
+        gfx.texture_manager.add_texture_to_set(metallic, set)?;
+        gfx.texture_manager.add_texture_to_set(roughness, set)?;
+        gfx.texture_manager.add_texture_to_set(ao, set)?;
+        Ok(Self {
+            textures: set,
+        })
+    }
 }
 
 pub struct GraphicSystem {
@@ -215,7 +237,7 @@ impl System for GraphicSystem {
 
                     let tex_bindgroup = self
                         .texture_manager
-                        .get_bindgroup(&self.device, gfx.textures);
+                        .get_bindgroup(&self.device, gfx.material.textures);
                     let cam_bindgroup = self.camera.get_bind_group(&self.device);
 
                     render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
