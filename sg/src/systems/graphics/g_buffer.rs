@@ -1,6 +1,6 @@
 use std::num::NonZeroU64;
 
-use wgpu::util::{DeviceExt, BufferInitDescriptor};
+use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::systems::graphics::Light;
 
@@ -35,16 +35,20 @@ pub struct GBuffer {
 
 impl GBuffer {
     fn make_textures(device: &wgpu::Device, size: wgpu::Extent3d) -> [wgpu::TextureView; 5] {
-        let tex = |label, format|
-            device.create_texture(&wgpu::TextureDescriptor {
-                size,
-                label: Some(label),
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                sample_count: 1,
-                mip_level_count: 1,
-            }).create_view(&wgpu::TextureViewDescriptor::default());
+        let tex = |label, format| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    size,
+                    label: Some(label),
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    sample_count: 1,
+                    mip_level_count: 1,
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        };
         [
             tex("albedo", wgpu::TextureFormat::Rgba8UnormSrgb),
             tex("position", wgpu::TextureFormat::Rgba32Float),
@@ -53,6 +57,9 @@ impl GBuffer {
             tex("depth", wgpu::TextureFormat::Depth32Float),
         ]
     }
+    // This is just a function to avoid repeats
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
     fn make_bindgroup(
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
@@ -76,27 +83,27 @@ impl GBuffer {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::Sampler(sampler)
+                    resource: wgpu::BindingResource::Sampler(sampler),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(albedo_tex)
+                    resource: wgpu::BindingResource::TextureView(albedo_tex),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(position_tex)
+                    resource: wgpu::BindingResource::TextureView(position_tex),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(normal_tex)
+                    resource: wgpu::BindingResource::TextureView(normal_tex),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: wgpu::BindingResource::TextureView(mra_tex)
+                    resource: wgpu::BindingResource::TextureView(mra_tex),
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
-                    resource: wgpu::BindingResource::TextureView(depth_tex)
+                    resource: wgpu::BindingResource::TextureView(depth_tex),
                 },
                 wgpu::BindGroupEntry {
                     binding: 6,
@@ -104,7 +111,7 @@ impl GBuffer {
                         size: Some(NonZeroU64::new(16 + max_lights * 32).unwrap()),
                         buffer: lights_buffer,
                         offset: dlights_offset,
-                    })
+                    }),
                 },
                 wgpu::BindGroupEntry {
                     binding: 7,
@@ -112,7 +119,7 @@ impl GBuffer {
                         size: Some(NonZeroU64::new(16 + max_lights * 32).unwrap()),
                         buffer: lights_buffer,
                         offset: plights_offset,
-                    })
+                    }),
                 },
                 wgpu::BindGroupEntry {
                     binding: 8,
@@ -120,9 +127,9 @@ impl GBuffer {
                         size: Some(NonZeroU64::new(16 + max_lights * 48).unwrap()),
                         buffer: lights_buffer,
                         offset: slights_offset,
-                    })
+                    }),
                 },
-            ]
+            ],
         })
     }
     fn update_bindgroup(&mut self, device: &wgpu::Device) {
@@ -136,10 +143,14 @@ impl GBuffer {
             &self.mra_tex,
             &self.depth_tex,
             &self.lights_buffer,
-            self.max_lights
+            self.max_lights,
         );
     }
-    fn make_lights_buffer(device: &wgpu::Device, lights: &[Light], max: u32) -> (wgpu::Buffer, u32) {
+    fn make_lights_buffer(
+        device: &wgpu::Device,
+        lights: &[Light],
+        max: u32,
+    ) -> (wgpu::Buffer, u32) {
         let mut dlights = Vec::with_capacity(max as usize);
         let mut plights = Vec::with_capacity(max as usize);
         let mut slights = Vec::with_capacity(max as usize);
@@ -155,26 +166,26 @@ impl GBuffer {
         let dlights_bytes = (16 + max * 32).align(alignment); // 12 padding + 4 u32 bytes for length
         let plights_bytes = (16 + max * 32).align(alignment);
         let slights_bytes = 16 + max * 48; // no alignment because last
-        let mut bytes: Vec<u8> = Vec::with_capacity(
-            dlights_bytes +
-            plights_bytes +
-            slights_bytes
-        );
-        { // directional
+        let mut bytes: Vec<u8> = Vec::with_capacity(dlights_bytes + plights_bytes + slights_bytes);
+        {
+            // directional
             let len = dlights.len().min(max);
             bytes.extend_from_slice(bytemuck::bytes_of(&(len as u32))); // length field
             bytes.extend(std::iter::repeat(0).take(12)); // padding to 16 align the length
             bytes.extend_from_slice(bytemuck::cast_slice(&dlights[0..len as usize])); // push lights
-            bytes.extend(std::iter::repeat(0).take(dlights_bytes - len * 32 - 16)); // fill the rest with zeros
+            bytes.extend(std::iter::repeat(0).take(dlights_bytes - len * 32 - 16));
+            // fill the rest with zeros
         }
-        { // point
+        {
+            // point
             let len = plights.len().min(max);
             bytes.extend_from_slice(bytemuck::bytes_of(&(len as u32)));
             bytes.extend(std::iter::repeat(0).take(12)); // padding to 16 align the length
             bytes.extend_from_slice(bytemuck::cast_slice(&plights[0..len as usize]));
             bytes.extend(std::iter::repeat(0).take(plights_bytes - len * 32 - 16));
         }
-        { // spot
+        {
+            // spot
             let len = slights.len().min(max);
             bytes.extend_from_slice(bytemuck::bytes_of(&(len as u32)));
             bytes.extend(std::iter::repeat(0).take(12)); // padding to 16 align the length
@@ -184,12 +195,21 @@ impl GBuffer {
         let buf = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("lights buffer"),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            contents: &bytes
+            contents: &bytes,
         });
-        let overflow = dlights.len().saturating_sub(max).max(plights.len().saturating_sub(max)).max(slights.len().saturating_sub(max));
+        let overflow = dlights
+            .len()
+            .saturating_sub(max)
+            .max(plights.len().saturating_sub(max))
+            .max(slights.len().saturating_sub(max));
         (buf, overflow as u32)
     }
-    pub fn new(device: &wgpu::Device, size: wgpu::Extent3d, lights: &[Light], max_lights: u32) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        size: wgpu::Extent3d,
+        lights: &[Light],
+        max_lights: u32,
+    ) -> Self {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Gbuffer bind group layout"),
             entries: &[
@@ -198,7 +218,7 @@ impl GBuffer {
                     count: None,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     binding: 0,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering) 
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                 },
                 // albedo
                 wgpu::BindGroupLayoutEntry {
@@ -209,7 +229,7 @@ impl GBuffer {
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    }
+                    },
                 },
                 // position
                 wgpu::BindGroupLayoutEntry {
@@ -220,7 +240,7 @@ impl GBuffer {
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    }
+                    },
                 },
                 // normals
                 wgpu::BindGroupLayoutEntry {
@@ -231,7 +251,7 @@ impl GBuffer {
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    }
+                    },
                 },
                 // metallic roughness ambiant occlusion
                 wgpu::BindGroupLayoutEntry {
@@ -242,7 +262,7 @@ impl GBuffer {
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    }
+                    },
                 },
                 // depth
                 wgpu::BindGroupLayoutEntry {
@@ -253,7 +273,7 @@ impl GBuffer {
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                         sample_type: wgpu::TextureSampleType::Depth,
-                    }
+                    },
                 },
                 // directional lights
                 wgpu::BindGroupLayoutEntry {
@@ -264,31 +284,31 @@ impl GBuffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
-                    }
+                    },
                 },
                 // point lights
                 wgpu::BindGroupLayoutEntry {
                     count: None,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     binding: 7,
-                    ty: wgpu::BindingType::Buffer { 
+                    ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
-                    }
+                    },
                 },
                 // spot lights
                 wgpu::BindGroupLayoutEntry {
                     count: None,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     binding: 8,
-                    ty: wgpu::BindingType::Buffer { 
+                    ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
-                    }
-                }
-            ]
+                    },
+                },
+            ],
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("gbuffer sampler"),
@@ -300,7 +320,8 @@ impl GBuffer {
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-        let [albedo_tex, position_tex, normal_tex, mra_tex, depth_tex] = Self::make_textures(device, size);
+        let [albedo_tex, position_tex, normal_tex, mra_tex, depth_tex] =
+            Self::make_textures(device, size);
         let (lights_buffer, overflow) = Self::make_lights_buffer(device, lights, max_lights);
 
         if overflow > 0 {
@@ -330,12 +351,13 @@ impl GBuffer {
             bind_group_layout,
             bindgroup,
             lights_buffer,
-            max_lights
+            max_lights,
         }
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, size: wgpu::Extent3d) {
-        let [albedo_tex, position_tex, normal_tex, mra_tex, depth_tex] = Self::make_textures(device, size);
+        let [albedo_tex, position_tex, normal_tex, mra_tex, depth_tex] =
+            Self::make_textures(device, size);
         self.albedo_tex = albedo_tex;
         self.position_tex = position_tex;
         self.normal_tex = normal_tex;

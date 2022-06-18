@@ -1,6 +1,6 @@
 use crate::numeric_enum;
 
-numeric_enum!{
+numeric_enum! {
     pub enum PieceKind: u8 {
         King   = 0,
         Queen  = 1,
@@ -32,12 +32,10 @@ pub struct Piece {
     pub color: Color,
 }
 
-pub struct Coordinate {
-
-}
+pub struct Coordinate {}
 
 pub struct GameState {
-    state: [[Option<Piece>; 8]; 8]
+    state: [[Option<Piece>; 8]; 8],
 }
 
 // macro fun (could've just used constants)

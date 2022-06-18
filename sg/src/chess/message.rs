@@ -2,15 +2,16 @@ use anyhow::{anyhow, Result};
 use mio::net::TcpStream;
 use rsa::{PaddingScheme, PublicKey, RsaPrivateKey, RsaPublicKey};
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
 use std::{
     fmt::{Debug, Display},
-    ops::{BitXor, Deref}, io::{Write, Read, Cursor},
+    io::{Cursor, Read, Write},
+    ops::{BitXor, Deref},
 };
+use uuid::Uuid;
 
 use crate::numeric_enum;
 
-use super::serialization::{Serialize, Deserialize};
+use super::serialization::{Deserialize, Serialize};
 
 numeric_enum! {
     // An error in the game's processing, usally a fatal one

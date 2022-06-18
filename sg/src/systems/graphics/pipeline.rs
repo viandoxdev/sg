@@ -1,6 +1,10 @@
-use std::{collections::HashMap, path::Path, lazy::SyncLazy};
+use std::{collections::HashMap, lazy::SyncLazy, path::Path};
 
-use codespan_reporting::{files::SimpleFiles, term::termcolor::StandardStream, diagnostic::{Diagnostic, Label}};
+use codespan_reporting::{
+    diagnostic::{Diagnostic, Label},
+    files::SimpleFiles,
+    term::termcolor::StandardStream,
+};
 use regex::Regex;
 
 pub enum ShaderConstant {
@@ -24,7 +28,7 @@ impl ToString for ShaderConstant {
 pub struct Shader {
     name: &'static str,
     source: String,
-    constants: HashMap<&'static str, ShaderConstant>
+    constants: HashMap<&'static str, ShaderConstant>,
 }
 
 #[macro_export]
@@ -36,7 +40,10 @@ macro_rules! include_shader {
 
 impl<'a> Shader {
     pub fn from_file(path: impl AsRef<Path>, name: &'static str) -> Self {
-        Self::new(std::fs::read_to_string(path).expect("Error on file read"), name)
+        Self::new(
+            std::fs::read_to_string(path).expect("Error on file read"),
+            name,
+        )
     }
     pub fn new(source: String, name: &'static str) -> Self {
         Self {
@@ -63,19 +70,19 @@ impl<'a> Shader {
     pub fn get_integer(&self, key: &'static str) -> Option<i64> {
         match self.constants.get(key)? {
             ShaderConstant::Integer(i) => Some(*i),
-            _ => None
+            _ => None,
         }
     }
     pub fn get_float(&self, key: &'static str) -> Option<f64> {
         match self.constants.get(key)? {
             ShaderConstant::Float(f) => Some(*f),
-            _ => None
+            _ => None,
         }
     }
     pub fn get_bool(&self, key: &'static str) -> Option<bool> {
         match self.constants.get(key)? {
             ShaderConstant::Bool(b) => Some(*b),
-            _ => None
+            _ => None,
         }
     }
     pub fn module(&self, device: &wgpu::Device) -> wgpu::ShaderModule {
@@ -91,7 +98,8 @@ impl<'a> Shader {
             let mut err_count = 0;
             let mut files = SimpleFiles::new();
             let file = files.add(self.name, &source);
-            let writer = StandardStream::stderr(codespan_reporting::term::termcolor::ColorChoice::Always);
+            let writer =
+                StandardStream::stderr(codespan_reporting::term::termcolor::ColorChoice::Always);
             let config = codespan_reporting::term::Config::default();
             static RE: SyncLazy<Regex> = SyncLazy::new(|| Regex::new(r"\{\{(.+?)\}\}").unwrap());
             for cap in RE.captures_iter(&source) {
@@ -99,13 +107,16 @@ impl<'a> Shader {
                 let m = cap.get(1).unwrap();
                 let diagnostic = Diagnostic::error()
                     .with_message("constant hasn't been given any value")
-                    .with_labels(vec![
-                        Label::primary(file, m.range()).with_message(format!("No value for `{}` given", m.as_str()))
-                    ]);
-                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diagnostic).ok();
+                    .with_labels(vec![Label::primary(file, m.range())
+                        .with_message(format!("No value for `{}` given", m.as_str()))]);
+                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diagnostic)
+                    .ok();
             }
             if err_count > 0 {
-                panic!("Error{} in shader preprocessing.", if err_count == 1 { "" } else { "s" })
+                panic!(
+                    "Error{} in shader preprocessing.",
+                    if err_count == 1 { "" } else { "s" }
+                )
             }
         }
         device.create_shader_module(&wgpu::ShaderModuleDescriptor {
@@ -117,14 +128,23 @@ impl<'a> Shader {
 
 pub struct Pipeline {
     layout: wgpu::PipelineLayout,
-    build: Box<dyn Fn(&wgpu::Device, &wgpu::PipelineLayout, &wgpu::ShaderModule) -> wgpu::RenderPipeline>,
+    build: Box<
+        dyn Fn(&wgpu::Device, &wgpu::PipelineLayout, &wgpu::ShaderModule) -> wgpu::RenderPipeline,
+    >,
     pub pipeline: wgpu::RenderPipeline,
     pub shader: Shader,
 }
 
 impl Pipeline {
-    pub fn new<F>(device: &wgpu::Device, layout: wgpu::PipelineLayout, shader: Shader, build: F) -> Self
-        where F: Fn(&wgpu::Device, &wgpu::PipelineLayout, &wgpu::ShaderModule) -> wgpu::RenderPipeline + 'static
+    pub fn new<F>(
+        device: &wgpu::Device,
+        layout: wgpu::PipelineLayout,
+        shader: Shader,
+        build: F,
+    ) -> Self
+    where
+        F: Fn(&wgpu::Device, &wgpu::PipelineLayout, &wgpu::ShaderModule) -> wgpu::RenderPipeline
+            + 'static,
     {
         let pipeline = build(device, &layout, &shader.module(device));
         let build = Box::new(build);
@@ -132,7 +152,7 @@ impl Pipeline {
             layout,
             build,
             pipeline,
-            shader
+            shader,
         }
     }
 

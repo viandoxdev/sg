@@ -1,9 +1,12 @@
 use anyhow::Result;
 use ecs::Component;
 use glam::{Mat4, Quat, Vec3};
-use image::DynamicImage;
 
-use crate::systems::{graphics::{mesh_manager::MeshHandle, texture_manager::{TextureSet, TextureHandle, SingleValue}, Light, GraphicSystem}, GravitySystem};
+use crate::systems::graphics::{
+    mesh_manager::MeshHandle,
+    texture_manager::{SingleValue, TextureHandle, TextureSet},
+    GraphicSystem, Light,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PositionComponent {
@@ -18,7 +21,7 @@ pub struct GraphicsComponent {
 }
 #[derive(Clone, Copy)]
 pub struct LightComponent {
-    pub light: Light
+    pub light: Light,
 }
 #[derive(Clone)]
 pub struct TransformsComponent {
@@ -72,8 +75,16 @@ impl GraphicsComponent {
         ao: Option<TextureHandle>,
         gfx: &mut GraphicSystem,
     ) -> Result<Self> {
-        let metallic = gfx.texture_manager.get_or_add_single_value_texture(&gfx.device, &gfx.queue, SingleValue::Factor(metallic));
-        let roughness = gfx.texture_manager.get_or_add_single_value_texture(&gfx.device, &gfx.queue, SingleValue::Factor(roughness));
+        let metallic = gfx.texture_manager.get_or_add_single_value_texture(
+            &gfx.device,
+            &gfx.queue,
+            SingleValue::Factor(metallic),
+        );
+        let roughness = gfx.texture_manager.get_or_add_single_value_texture(
+            &gfx.device,
+            &gfx.queue,
+            SingleValue::Factor(roughness),
+        );
         Self::new(mesh, albedo, normal_map, metallic, roughness, ao, gfx)
     }
     pub fn new(
@@ -86,8 +97,20 @@ impl GraphicsComponent {
         gfx: &mut GraphicSystem,
     ) -> Result<Self> {
         let set = gfx.texture_manager.add_set();
-        let normal_map = normal_map.unwrap_or_else(|| gfx.texture_manager.get_or_add_single_value_texture(&gfx.device, &gfx.queue, SingleValue::Normal(Vec3::new(0.0, 0.0, 1.0))));
-        let ao = ao.unwrap_or_else(|| gfx.texture_manager.get_or_add_single_value_texture(&gfx.device, &gfx.queue, SingleValue::Factor(1.0)));
+        let normal_map = normal_map.unwrap_or_else(|| {
+            gfx.texture_manager.get_or_add_single_value_texture(
+                &gfx.device,
+                &gfx.queue,
+                SingleValue::Normal(Vec3::new(0.0, 0.0, 1.0)),
+            )
+        });
+        let ao = ao.unwrap_or_else(|| {
+            gfx.texture_manager.get_or_add_single_value_texture(
+                &gfx.device,
+                &gfx.queue,
+                SingleValue::Factor(1.0),
+            )
+        });
         gfx.texture_manager.add_texture_to_set(albedo, set)?;
         gfx.texture_manager.add_texture_to_set(normal_map, set)?;
         gfx.texture_manager.add_texture_to_set(metallic, set)?;

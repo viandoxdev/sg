@@ -3,23 +3,21 @@
 #![allow(incomplete_features)]
 #![allow(dead_code)]
 
-use std::collections::VecDeque;
-
 use glam::{Quat, Vec3, Vec4};
 use systems::graphics::mesh_manager::{Mesh, Primitives};
 use systems::graphics::texture_manager::SingleValue;
-use systems::{LoggingSystem, GravitySystem, CenterSystem};
-use systems::graphics::{GraphicSystem, Vertex, Light, PointLight, DiretionalLight, SpotLight};
+use systems::graphics::{GraphicSystem, Light, PointLight};
+use systems::{CenterSystem, GravitySystem, LoggingSystem};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 
-use components::{GraphicsComponent, TransformsComponent, PositionComponent, LightComponent};
-use ecs::{ECS, owned_entity};
+use components::{GraphicsComponent, LightComponent, PositionComponent, TransformsComponent};
+use ecs::{owned_entity, ECS};
 
 mod chess;
-pub mod systems;
 pub mod components;
+pub mod systems;
 
 async fn run(mut ecs: ECS) {
     let event_loop = EventLoop::new();
@@ -38,39 +36,55 @@ async fn run(mut ecs: ECS) {
 
         let mesh = Mesh::new_cube();
         let mesh = gfx.mesh_manager.add(&gfx.device, &mesh);
-        
+
         let albedo = image::open("albedo.png").unwrap().flipv();
-        let albedo = gfx.texture_manager.add_image_texture(&gfx.device, &gfx.queue, albedo);
+        let albedo = gfx
+            .texture_manager
+            .add_image_texture(&gfx.device, &gfx.queue, albedo);
         let norm = image::open("norm.png").unwrap().flipv();
-        let norm = gfx.texture_manager.add_image_texture(&gfx.device, &gfx.queue, norm);
-        let met = gfx.texture_manager.get_or_add_single_value_texture(&gfx.device, &gfx.queue, SingleValue::Factor(0.0));
+        let norm = gfx
+            .texture_manager
+            .add_image_texture(&gfx.device, &gfx.queue, norm);
+        let met = gfx.texture_manager.get_or_add_single_value_texture(
+            &gfx.device,
+            &gfx.queue,
+            SingleValue::Factor(0.0),
+        );
         let roughness = image::open("roughness.png").unwrap().flipv();
-        let roughness = gfx.texture_manager.add_image_texture(&gfx.device, &gfx.queue, roughness);
+        let roughness = gfx
+            .texture_manager
+            .add_image_texture(&gfx.device, &gfx.queue, roughness);
         let ao = image::open("ao.png").unwrap().flipv();
-        let ao = gfx.texture_manager.add_image_texture(&gfx.device, &gfx.queue, ao);
-        
-        let gfc = GraphicsComponent::new(mesh, albedo, Some(norm), met, roughness, Some(ao), gfx).unwrap();
-        
+        let ao = gfx
+            .texture_manager
+            .add_image_texture(&gfx.device, &gfx.queue, ao);
+
+        let gfc = GraphicsComponent::new(mesh, albedo, Some(norm), met, roughness, Some(ao), gfx)
+            .unwrap();
+
         let mut tsm = TransformsComponent::new();
         tsm.set_translation(Vec3::new(0.0, 0.0, 0.0));
-        
+
         entity = ecs.new_entity();
         ecs.add_component(entity, gfc);
         ecs.add_component(entity, tsm);
     }
 
     let pos = [
-        Vec3::new( 1.0,  1.0, 0.0),
-        Vec3::new(-1.0,  1.0, 0.0),
+        Vec3::new(1.0, 1.0, 0.0),
+        Vec3::new(-1.0, 1.0, 0.0),
         Vec3::new(-1.0, -1.0, 0.0),
-        Vec3::new( 1.0, -1.0, 0.0),
+        Vec3::new(1.0, -1.0, 0.0),
     ];
     let lc = Vec4::splat(13.0);
     for pos in pos {
         let light = ecs.new_entity();
-        ecs.add_component(light, LightComponent {
-            light: Light::Point(PointLight::new(pos, lc))
-        });
+        ecs.add_component(
+            light,
+            LightComponent {
+                light: Light::Point(PointLight::new(pos, lc)),
+            },
+        );
     }
 
     let mut count = 0f64;

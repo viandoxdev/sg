@@ -68,7 +68,7 @@ macro_rules! geometry_renderpass_desc {
                 stencil_ops: None,
             }),
         }
-    }
+    };
 }
 
 #[macro_export]
@@ -76,21 +76,19 @@ macro_rules! shading_renderpass_desc {
     ($view:expr) => {
         wgpu::RenderPassDescriptor {
             label: Some("Shading pass"),
-            color_attachments: &[
-                wgpu::RenderPassColorAttachment {
-                    view: $view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 1.0,
-                        }),
-                        store: true,
-                    },
-                }
-            ],
+            color_attachments: &[wgpu::RenderPassColorAttachment {
+                view: $view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 1.0,
+                    }),
+                    store: true,
+                },
+            }],
             depth_stencil_attachment: None,
         }
     };
@@ -129,7 +127,7 @@ macro_rules! geometry_pipeline_desc {
                         format: wgpu::TextureFormat::Rgba8Unorm,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
-                    }
+                    },
                 ],
             }),
             primitive: wgpu::PrimitiveState {
@@ -167,18 +165,16 @@ macro_rules! shading_pipeline_desc {
             vertex: wgpu::VertexState {
                 module: $shader,
                 entry_point: "vs_main",
-                buffers: &[]
+                buffers: &[],
             },
             fragment: Some(wgpu::FragmentState {
                 module: $shader,
                 entry_point: "fs_main",
-                targets: &[
-                    wgpu::ColorTargetState {
-                        format: $format,
-                        blend: Some(wgpu::BlendState::REPLACE),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    },
-                ],
+                targets: &[wgpu::ColorTargetState {
+                    format: $format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                }],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -199,4 +195,3 @@ macro_rules! shading_pipeline_desc {
         }
     };
 }
-

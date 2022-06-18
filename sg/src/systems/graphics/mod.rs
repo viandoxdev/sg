@@ -1,26 +1,28 @@
 use std::collections::HashSet;
 
 use anyhow::Result;
-use ecs::{System, filter_components};
-use glam::{Vec3, Vec4, Vec2};
+use ecs::{filter_components, System};
+use glam::{Vec2, Vec3, Vec4};
 use uuid::Uuid;
 use winit::window::Window;
 
-use crate::{components::{GraphicsComponent, TransformsComponent, LightComponent}, include_shader};
+use crate::{
+    components::{GraphicsComponent, LightComponent, TransformsComponent},
+    include_shader,
+};
 
 use self::{
-    camera::Camera,
-    mesh_manager::MeshManager,
-    texture_manager::TextureManager, g_buffer::GBuffer, pipeline::Pipeline,
+    camera::Camera, g_buffer::GBuffer, mesh_manager::MeshManager, pipeline::Pipeline,
+    texture_manager::TextureManager,
 };
 
 #[macro_use] // avoid importing each and every macro
 pub mod desc;
 pub mod camera;
-pub mod mesh_manager;
-pub mod texture_manager;
 pub mod g_buffer;
+pub mod mesh_manager;
 pub mod pipeline;
+pub mod texture_manager;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -66,7 +68,7 @@ impl Vertex {
 pub struct DiretionalLight {
     direction: Vec3,
     padding: f32,
-    color: Vec4
+    color: Vec4,
 }
 
 #[repr(C)]
@@ -74,7 +76,7 @@ pub struct DiretionalLight {
 pub struct PointLight {
     position: Vec3,
     padding: f32,
-    color: Vec4
+    color: Vec4,
 }
 
 #[repr(C)]
@@ -84,33 +86,39 @@ pub struct SpotLight {
     padding: f32,
     direction: Vec3,
     cut_off: f32,
-    color: Vec4
+    color: Vec4,
 }
 
 impl DiretionalLight {
-    pub fn new(direction: Vec3, color: Vec4) -> Self { Self {
-        direction,
-        padding: 0.0,
-        color,
-    }}
+    pub fn new(direction: Vec3, color: Vec4) -> Self {
+        Self {
+            direction,
+            padding: 0.0,
+            color,
+        }
+    }
 }
 
 impl PointLight {
-    pub fn new(position: Vec3, color: Vec4) -> Self { Self {
-        position,
-        padding: 0.0,
-        color,
-    }}
+    pub fn new(position: Vec3, color: Vec4) -> Self {
+        Self {
+            position,
+            padding: 0.0,
+            color,
+        }
+    }
 }
 
 impl SpotLight {
-    pub fn new(position: Vec3, direction: Vec3, cut_off: f32, color: Vec4) -> Self { Self {
-        position,
-        padding: 0.0,
-        direction,
-        cut_off,
-        color,
-    }}
+    pub fn new(position: Vec3, direction: Vec3, cut_off: f32, color: Vec4) -> Self {
+        Self {
+            position,
+            padding: 0.0,
+            direction,
+            cut_off,
+            color,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -140,7 +148,7 @@ impl System for GraphicSystem {
     fn name() -> &'static str {
         "GraphicSystem"
     }
-    fn pass<'a>(&mut self, mut entities: ecs::EntitiesBorrow<'a>) {
+    fn pass(&mut self, mut entities: ecs::EntitiesBorrow) {
         let renderables = filter_components!(entities
             => GraphicsComponent;
             ? TransformsComponent;
@@ -164,9 +172,15 @@ impl System for GraphicSystem {
             // update the g_buffer
             let lights = lights.into_iter().map(|(_, c)| c.light).collect::<Vec<_>>();
             if let Err(overflow) = self.g_buffer.update_lights(&self.device, &lights) {
-                let current_max = self.shading_pipeline.shader.get_integer("LIGHTS_MAX").unwrap() as u32;
+                let current_max = self
+                    .shading_pipeline
+                    .shader
+                    .get_integer("LIGHTS_MAX")
+                    .unwrap() as u32;
                 let new_max = (current_max * 2).max(current_max + overflow);
-                self.shading_pipeline.shader.set_integer("LIGHTS_MAX", new_max as i64);
+                self.shading_pipeline
+                    .shader
+                    .set_integer("LIGHTS_MAX", new_max as i64);
                 log::debug!("Max lights reached increasing limit, rebuilding shader and pipeline");
                 self.shading_pipeline.rebuild(&self.device); // very expensive
             };
@@ -186,7 +200,8 @@ impl System for GraphicSystem {
                             label: Some("gfx render encoder"),
                         });
 
-                let mut render_pass = encoder.begin_render_pass(&geometry_renderpass_desc!(&self.g_buffer));
+                let mut render_pass =
+                    encoder.begin_render_pass(&geometry_renderpass_desc!(self.g_buffer));
                 render_pass.set_pipeline(&self.geometry_pipeline.pipeline);
 
                 self.camera.update(&self.device, &self.queue);
@@ -204,17 +219,13 @@ impl System for GraphicSystem {
                     let cam_bindgroup = self.camera.get_bind_group(&self.device);
 
                     render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                    render_pass
-                        .set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
+                    render_pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
                     render_pass.set_bind_group(0, tex_bindgroup, &[]);
                     render_pass.set_bind_group(1, cam_bindgroup, &[]);
                     render_pass.set_push_constants(
                         wgpu::ShaderStages::VERTEX,
                         0,
-                        bytemuck::cast_slice(&[
-                            tsm.mat(),
-                            tsm.mat().inverse().transpose(),
-                        ])
+                        bytemuck::cast_slice(&[tsm.mat(), tsm.mat().inverse().transpose()]),
                     );
                     render_pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
                 }
@@ -281,11 +292,16 @@ impl GraphicSystem {
 
         let texture_manager = TextureManager::new();
         let mut camera = Camera::new();
-        let g_buffer = GBuffer::new(&device, wgpu::Extent3d {
-            width: config.width,
-            height: config.height,
-            depth_or_array_layers: 1,
-        }, &[], 64);
+        let g_buffer = GBuffer::new(
+            &device,
+            wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
+            &[],
+            64,
+        );
 
         let geometry_pipeline = {
             let shader = include_shader!("g_buffer.wgsl", "geometry shader");
@@ -293,14 +309,12 @@ impl GraphicSystem {
                 label: Some("geometry pipeline layout"),
                 bind_group_layouts: &[
                     texture_manager.layout(&device),
-                    camera.get_bind_group_layout(&device)
+                    camera.get_bind_group_layout(&device),
                 ],
-                push_constant_ranges: &[
-                    wgpu::PushConstantRange {
-                        stages: wgpu::ShaderStages::VERTEX,
-                        range: 0..128,
-                    }
-                ],
+                push_constant_ranges: &[wgpu::PushConstantRange {
+                    stages: wgpu::ShaderStages::VERTEX,
+                    range: 0..128,
+                }],
             });
             Pipeline::new(&device, layout, shader, |device, layout, shader| {
                 device.create_render_pipeline(&geometry_pipeline_desc!(layout, shader))
@@ -317,7 +331,7 @@ impl GraphicSystem {
                     &g_buffer.bind_group_layout,
                     camera.get_bind_group_layout(&device),
                 ],
-                push_constant_ranges: &[]
+                push_constant_ranges: &[],
             });
             let format = config.format;
             Pipeline::new(&device, layout, shader, move |device, layout, shader| {
@@ -354,11 +368,14 @@ impl GraphicSystem {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
-            self.g_buffer.resize(&self.device, wgpu::Extent3d {
-                width: new_size.width,
-                height: new_size.height,
-                depth_or_array_layers: 1,
-            });
+            self.g_buffer.resize(
+                &self.device,
+                wgpu::Extent3d {
+                    width: new_size.width,
+                    height: new_size.height,
+                    depth_or_array_layers: 1,
+                },
+            );
             self.camera
                 .set_aspect(new_size.width as f32 / new_size.height as f32);
         }

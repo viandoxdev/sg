@@ -1,6 +1,11 @@
-use std::{cell::UnsafeCell, lazy::OnceCell, hash::{Hash, Hasher}, collections::HashMap};
+use std::{
+    cell::UnsafeCell,
+    collections::HashMap,
+    hash::{Hash, Hasher},
+    lazy::OnceCell,
+};
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use glam::{Vec3, Vec4};
 use image::DynamicImage;
 use slotmap::{SecondaryMap, SlotMap};
@@ -10,10 +15,9 @@ slotmap::new_key_type! {
     pub struct TextureSet;
 }
 
-pub enum SingleValuePurpose {
-}
+pub enum SingleValuePurpose {}
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub enum SingleValue {
     /// The value represents a color (implies TextureFormat::Rgba8UnormSrgb)
     Color(Vec4),
@@ -41,20 +45,11 @@ impl Hash for SingleValue {
         match self {
             SingleValue::Color(c) => {
                 state.write_u8(0);
-                [
-                    c.x.to_bits(),
-                    c.y.to_bits(),
-                    c.z.to_bits(),
-                    c.w.to_bits(),
-                ].hash(state);
+                [c.x.to_bits(), c.y.to_bits(), c.z.to_bits(), c.w.to_bits()].hash(state);
             }
             SingleValue::Normal(n) => {
                 state.write_u8(1);
-                [
-                    n.x.to_bits(),
-                    n.y.to_bits(),
-                    n.z.to_bits(),
-                ].hash(state);
+                [n.x.to_bits(), n.y.to_bits(), n.z.to_bits()].hash(state);
             }
             SingleValue::Float(f) => {
                 state.write_u8(2);
@@ -63,6 +58,46 @@ impl Hash for SingleValue {
             SingleValue::Factor(f) => {
                 state.write_u8(3);
                 f.to_bits().hash(state);
+            }
+        }
+    }
+}
+
+impl PartialEq for SingleValue {
+    fn eq(&self, other: &Self) -> bool {
+        match self {
+            Self::Color(a) => {
+                if let Self::Color(b) = other {
+                    a.x.to_bits() == b.x.to_bits()
+                        && a.z.to_bits() == b.y.to_bits()
+                        && a.y.to_bits() == b.z.to_bits()
+                        && a.w.to_bits() == b.w.to_bits()
+                } else {
+                    false
+                }
+            }
+            Self::Normal(a) => {
+                if let Self::Normal(b) = other {
+                    a.x.to_bits() == b.x.to_bits()
+                        && a.z.to_bits() == b.y.to_bits()
+                        && a.y.to_bits() == b.z.to_bits()
+                } else {
+                    false
+                }
+            }
+            Self::Float(a) => {
+                if let Self::Float(b) = other {
+                    a.to_bits() == b.to_bits()
+                } else {
+                    false
+                }
+            }
+            Self::Factor(a) => {
+                if let Self::Factor(b) = other {
+                    a.to_bits() == b.to_bits()
+                } else {
+                    false
+                }
             }
         }
     }
@@ -159,8 +194,7 @@ impl TextureManager {
 
     pub fn add_texture_to_set(&mut self, tex: TextureHandle, set: TextureSet) -> Result<()> {
         self.textures.get(tex).context("No such texture")?;
-        self.sets.get_mut(set).context("No such set")?
-            .push(tex);
+        self.sets.get_mut(set).context("No such set")?.push(tex);
         self.textures_set.get_mut(tex).unwrap().push(set);
         Ok(())
     }
@@ -172,17 +206,18 @@ impl TextureManager {
     /// Swap the tetures of a and b, making the texture of a go to b and the texture of b go to a
     pub fn swap(&mut self, a: TextureHandle, b: TextureHandle) -> Result<()> {
         // delete cached bind groups
-        let sets = self.textures_set.get(a).context("No such texture")?
-            .iter().chain(self.textures_set.get(b).context("No such texture")?.iter());
+        let sets = self
+            .textures_set
+            .get(a)
+            .context("No such texture")?
+            .iter()
+            .chain(self.textures_set.get(b).context("No such texture")?.iter());
         for set in sets {
             self.cache_bind_groups.get_mut().remove(*set);
         }
         {
             let [ma, mb] = self.textures.get_disjoint_mut([a, b]).unwrap();
-            std::mem::swap(
-                ma,
-                mb,
-            );
+            std::mem::swap(ma, mb);
         }
         let av = self.texture_value.get(a).copied();
         let bv = self.texture_value.get(b).copied();
@@ -463,5 +498,11 @@ impl TextureManager {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         });
         tex.create_view(&wgpu::TextureViewDescriptor::default())
+    }
+}
+
+impl Default for TextureManager {
+    fn default() -> Self {
+        Self::new()
     }
 }

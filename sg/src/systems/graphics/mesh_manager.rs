@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
-use glam::Vec3;
 use glam::Vec2;
+use glam::Vec3;
 use slotmap::SlotMap;
 use wgpu::util::DeviceExt;
 
@@ -105,7 +105,7 @@ impl Mesh {
         // average out the tangents
         for (i, acc) in tangents.into_iter().enumerate() {
             let acc = acc.normalize_or_zero();
-            if acc.is_normalized() { 
+            if acc.is_normalized() {
                 self.vertices[i].tangent = acc;
             } else {
                 self.vertices[i].tangent = Vec3::new(1.0, 0.0, 0.0) // should not be full of 0
@@ -121,9 +121,9 @@ pub trait Primitives {
 
 impl Primitives for Mesh {
     fn new_icosphere(detail: u32) -> Self {
-        const O: f32 = 0.000000000000000;
-        const H: f32 = 0.525731112119133;
-        const L: f32 = 0.850650808352039;
+        const O: f32 = 0.0000000;
+        const H: f32 = 0.5257311;
+        const L: f32 = 0.8506508;
         macro_rules! v {
             ($a:expr, $b:expr, $c:expr) => {
                 Vertex {
@@ -143,15 +143,40 @@ impl Primitives for Mesh {
             };
         }
         let mut vertices = vec![
-            v![-H, L, O], v![ O, H, L], v![ H, L, O], v![ O, H,-L],
-            v![ L, O, H], v![ L, O,-H], v![-H,-L, O], v![ H,-L, O],
-            v![ O,-H, L], v![ O,-H,-L], v![-L, O, H], v![-L, O,-H]
+            v![-H, L, O],
+            v![O, H, L],
+            v![H, L, O],
+            v![O, H, -L],
+            v![L, O, H],
+            v![L, O, -H],
+            v![-H, -L, O],
+            v![H, -L, O],
+            v![O, -H, L],
+            v![O, -H, -L],
+            v![-L, O, H],
+            v![-L, O, -H],
         ];
         let mut indices: Vec<[u16; 3]> = vec![
-            [ 0, 1, 2], [ 2, 3, 0], [ 2, 1, 4], [ 2, 5, 3], [ 5, 2, 4],
-            [ 6, 7, 8], [ 6, 9, 7], [ 6, 8,10], [ 6,11, 9], [10,11, 6],
-            [ 0,10, 1], [ 0, 3,11], [ 0,11,10], [ 7, 4, 8], [ 7, 9, 5],
-            [ 7, 5, 4], [ 9,11, 3], [ 9, 3, 5], [ 1,10, 8], [ 1, 8, 4]
+            [0, 1, 2],
+            [2, 3, 0],
+            [2, 1, 4],
+            [2, 5, 3],
+            [5, 2, 4],
+            [6, 7, 8],
+            [6, 9, 7],
+            [6, 8, 10],
+            [6, 11, 9],
+            [10, 11, 6],
+            [0, 10, 1],
+            [0, 3, 11],
+            [0, 11, 10],
+            [7, 4, 8],
+            [7, 9, 5],
+            [7, 5, 4],
+            [9, 11, 3],
+            [9, 3, 5],
+            [1, 10, 8],
+            [1, 8, 4],
         ];
         for _ in 0..detail {
             for _ in 0..indices.len() {
@@ -160,7 +185,11 @@ impl Primitives for Mesh {
                 let p1 = vertices[i1 as usize].position;
                 let p2 = vertices[i2 as usize].position;
                 let p3 = vertices[i3 as usize].position;
-                let (i4, i5, i6) = (vertices.len() as u16, vertices.len() as u16 + 1, vertices.len() as u16 + 2);
+                let (i4, i5, i6) = (
+                    vertices.len() as u16,
+                    vertices.len() as u16 + 1,
+                    vertices.len() as u16 + 2,
+                );
                 let p4 = p1.lerp(p2, 0.5).normalize(); // halfway point p1 -> p2
                 let p5 = p2.lerp(p3, 0.5).normalize(); // normalize to keep the vertices on the unit sphere
                 let p6 = p3.lerp(p1, 0.5).normalize();
@@ -174,15 +203,12 @@ impl Primitives for Mesh {
                     [i1, i4, i6], // 1.
                     [i6, i5, i3], // 2.
                     [i6, i4, i5], // 3.
-                    [i4, i2, i5]  // 4.
+                    [i4, i2, i5], // 4.
                 ]);
                 vertices.extend_from_slice(&[v!(p4), v!(p5), v!(p6)]);
             }
         }
-        Self {
-            vertices,
-            indices,
-        }
+        Self { vertices, indices }
     }
     fn new_cubic_sphere(detail: u32) -> Self {
         macro_rules! v {
@@ -198,10 +224,16 @@ impl Primitives for Mesh {
                 v!(Vec3::new($x, $y, $z))
             };
         }
-        const L: f32 = 0.57735026918963; // 1/sqrt(3)
+        const L: f32 = 0.5773502; // 1/sqrt(3)
         let mut vertices = vec![
-            v![ L,  L, -L], v![-L,  L, -L], v![-L, -L, -L], v![ L, -L, -L],
-            v![-L,  L,  L], v![ L,  L,  L], v![ L, -L,  L], v![-L, -L,  L],
+            v![L, L, -L],
+            v![-L, L, -L],
+            v![-L, -L, -L],
+            v![L, -L, -L],
+            v![-L, L, L],
+            v![L, L, L],
+            v![L, -L, L],
+            v![-L, -L, L],
         ];
         let mut quads = vec![
             [0, 1, 2, 3], // front
@@ -242,9 +274,7 @@ impl Primitives for Mesh {
                     [i5, i7, i3, i8], // 3.
                     [i9, i5, i8, i4], // 4.
                 ]);
-                vertices.extend_from_slice(&[
-                    v!(p5), v!(p6), v!(p7), v!(p8), v!(p9)
-                ]);
+                vertices.extend_from_slice(&[v!(p5), v!(p6), v!(p7), v!(p8), v!(p9)]);
             }
         }
         for vert in &mut vertices {
@@ -254,16 +284,13 @@ impl Primitives for Mesh {
             vert.tex_coords.x = 0.5 - d.x.atan2(d.z) / std::f32::consts::TAU;
             vert.tex_coords.y = 0.5 + d.y.asin() / std::f32::consts::PI;
         }
-        // quads, but for triangles 
+        // quads, but for triangles
         let mut indices = Vec::new();
         for quad in quads {
             indices.push([quad[0], quad[1], quad[2]]);
             indices.push([quad[0], quad[2], quad[3]]);
         }
-        let mut res = Self {
-            indices,
-            vertices
-        };
+        let mut res = Self { indices, vertices };
         res.recompute_tangents();
         res
     }
@@ -312,13 +339,19 @@ impl Primitives for Mesh {
                 v!([ 0.5, -0.5, -0.5] [ 0.0, -1.0,  0.0] [0.0, 1.0]),
             ],
             indices: vec![
-                [ 0,  1,  2], [ 0,  2,  3],
-                [ 4,  5,  6], [ 4,  6,  7],
-                [ 8,  9, 10], [ 8, 10, 11],
-                [12, 13, 14], [12, 14, 15],
-                [16, 17, 18], [16, 18, 19],
-                [20, 21, 22], [20, 22, 23],
-            ]
+                [0, 1, 2],
+                [0, 2, 3],
+                [4, 5, 6],
+                [4, 6, 7],
+                [8, 9, 10],
+                [8, 10, 11],
+                [12, 13, 14],
+                [12, 14, 15],
+                [16, 17, 18],
+                [16, 18, 19],
+                [20, 21, 22],
+                [20, 22, 23],
+            ],
         };
         res.recompute_tangents();
         res
@@ -336,18 +369,11 @@ impl MeshManager {
         }
     }
 
-    pub fn add(
-        &mut self,
-        device: &wgpu::Device,
-        mesh: &Mesh,
-    ) -> MeshHandle {
+    pub fn add(&mut self, device: &wgpu::Device, mesh: &Mesh) -> MeshHandle {
         self.meshes.insert(mesh.buffered(device))
     }
 
-    pub fn add_buffered(
-        &mut self,
-        mesh: BufferedMesh,
-    ) -> MeshHandle {
+    pub fn add_buffered(&mut self, mesh: BufferedMesh) -> MeshHandle {
         self.meshes.insert(mesh)
     }
 
@@ -355,28 +381,25 @@ impl MeshManager {
         self.meshes.remove(handle)
     }
 
-    pub fn update(
-        &mut self,
-        handle: MeshHandle,
-        device: &wgpu::Device,
-        mesh: &Mesh,
-    ) -> Result<()> {
+    pub fn update(&mut self, handle: MeshHandle, device: &wgpu::Device, mesh: &Mesh) -> Result<()> {
         self.update_buffered(handle, mesh.buffered(device))
     }
 
-    pub fn update_buffered(
-        &mut self,
-        handle: MeshHandle,
-        mesh: BufferedMesh,
-    ) -> Result<()> {
-        *self.meshes
+    pub fn update_buffered(&mut self, handle: MeshHandle, mesh: BufferedMesh) -> Result<()> {
+        *self
+            .meshes
             .get_mut(handle)
-            .ok_or_else(|| anyhow!("Handle doesn't point to any mesh"))?
-            = mesh;
+            .ok_or_else(|| anyhow!("Handle doesn't point to any mesh"))? = mesh;
         Ok(())
     }
 
     pub fn get(&self, handle: MeshHandle) -> Option<&BufferedMesh> {
         self.meshes.get(handle)
+    }
+}
+
+impl Default for MeshManager {
+    fn default() -> Self {
+        Self::new()
     }
 }

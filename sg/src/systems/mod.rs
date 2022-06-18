@@ -44,7 +44,7 @@ impl System for CenterSystem {
 pub struct LoggingSystem {}
 
 impl System for LoggingSystem {
-    fn pass<'a>(&mut self, mut entities: ecs::EntitiesBorrow<'a>) {
+    fn pass(&mut self, mut entities: ecs::EntitiesBorrow) {
         let reqs = SystemRequirements::new().add::<PositionComponent>();
         let entities = reqs.filter(&mut entities);
         for (_, mut comps) in entities {

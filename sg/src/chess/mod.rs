@@ -4,8 +4,8 @@ use mio::{
     Events, Interest, Poll, Token,
 };
 use rsa::{RsaPrivateKey, RsaPublicKey};
-use uuid::Uuid;
 use std::{
+    collections::HashMap,
     io::{Cursor, Write},
     net::ToSocketAddrs,
     sync::{
@@ -14,22 +14,24 @@ use std::{
         Arc,
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant}, collections::HashMap,
+    time::{Duration, Instant},
 };
+use uuid::Uuid;
 
 use parking_lot::{Mutex, RwLock};
 
-use crate::{chess::message::Error, numeric_enum};
+use crate::chess::message::Error;
 
 use self::{
+    game::Color,
     message::{Message, Player, SignedMessage},
-    serialization::{Deserialize, Serialize}, game::Color,
+    serialization::{Deserialize, Serialize},
 };
 
+pub mod game;
 pub mod message;
 pub mod numeric_enum;
 pub mod serialization;
-pub mod game;
 
 #[derive(Clone)]
 struct Game {
@@ -99,7 +101,7 @@ impl Client {
             private_key,
             public_key,
             game: Arc::new(RwLock::new(None)),
-            ongoing_game_requests: Arc::new(Mutex::new(HashMap::new()))
+            ongoing_game_requests: Arc::new(Mutex::new(HashMap::new())),
         };
 
         res.start(addr, session_receiver, game_receiver)?;
@@ -249,13 +251,13 @@ impl Client {
 }
 
 fn handle_session(
-    id: &str, // identifying string (used in logs)
+    id: &str,               // identifying string (used in logs)
     stop: &Arc<AtomicBool>, // wether or not this thread should stop
     mut stream: TcpStream,
-    key: &RsaPublicKey, // our public key
+    key: &RsaPublicKey,                // our public key
     game_producer: &Sender<TcpStream>, // a Sender used to hand the stream to the next thread
     game: &Arc<RwLock<Option<Game>>>, // a Game struct (game info) in its proper rust thread safe form
-    ongoing_game_requests: &Arc<Mutex<HashMap<Uuid, Instant>>>
+    ongoing_game_requests: &Arc<Mutex<HashMap<Uuid, Instant>>>,
 ) -> Result<()> {
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(32);
@@ -275,14 +277,21 @@ fn handle_session(
 
     let msg = Message::read(&mut stream)?;
     match msg {
-        Message::NewGameRequest { game_id, public_key } => {
-            log::debug!("{id} Received game request (from {})", stream.peer_addr().unwrap());
+        Message::NewGameRequest {
+            game_id,
+            public_key,
+        } => {
+            log::debug!(
+                "{id} Received game request (from {})",
+                stream.peer_addr().unwrap()
+            );
             // TODO: ask for user if they accept the game
             if game.read().is_none() {
-                Message::NewGameApproval { 
+                Message::NewGameApproval {
                     game_id,
-                    public_key: key.clone() 
-                }.send(&mut stream)?;
+                    public_key: key.clone(),
+                }
+                .send(&mut stream)?;
 
                 game.write().replace(Game {
                     peer_public_key: public_key,
@@ -293,9 +302,14 @@ fn handle_session(
                 game_producer.send(stream)?; // Pass onto the next thread
             }
         }
-        Message::NewGameApproval { game_id, public_key } => {
+        Message::NewGameApproval {
+            game_id,
+            public_key,
+        } => {
             // prune all outdated requests
-            ongoing_game_requests.lock().retain(|_, ts| Instant::now().saturating_duration_since(*ts) < Duration::from_secs(600));
+            ongoing_game_requests.lock().retain(|_, ts| {
+                Instant::now().saturating_duration_since(*ts) < Duration::from_secs(600)
+            });
             // only start a game if the approval is for a game we know we requested, this is to
             // avoid a client just sending NewGameApproval message with random ids from getting accepted by every other peer.
             if ongoing_game_requests.lock().contains_key(&game_id) {
@@ -320,7 +334,12 @@ fn handle_session(
     Ok(())
 }
 
-fn handle_game_stream(game: &Arc<RwLock<Option<Game>>>, stream: &mut TcpStream, stop: &Arc<AtomicBool>, private_key: &RsaPrivateKey) -> Result<()> {
+fn handle_game_stream(
+    game: &Arc<RwLock<Option<Game>>>,
+    stream: &mut TcpStream,
+    stop: &Arc<AtomicBool>,
+    private_key: &RsaPrivateKey,
+) -> Result<()> {
     let mut peek_buffer = [0; 256];
     // Theses have to be filled in for the stream to reach this thread
     let peer_key = game.read().as_ref().unwrap().peer_public_key.clone();
@@ -357,7 +376,9 @@ fn handle_game_stream(game: &Arc<RwLock<Option<Game>>>, stream: &mut TcpStream, 
     {
         // Check if we have a disagreement on who is who.
         if peer_player == self_player {
-            Message::Error(Error::Disagreement).sign(private_key)?.send(stream)?;
+            Message::Error(Error::Disagreement)
+                .sign(private_key)?
+                .send(stream)?;
             return Ok(()); // The error comes from the peer, not us, so return Ok
         }
         // Compute color from starting_player, starting_player being
@@ -370,7 +391,9 @@ fn handle_game_stream(game: &Arc<RwLock<Option<Game>>>, stream: &mut TcpStream, 
             };
     } else {
         // It isn't, error out
-        Message::Error(Error::UnexpectedMessage).sign(private_key)?.send(stream)?;
+        Message::Error(Error::UnexpectedMessage)
+            .sign(private_key)?
+            .send(stream)?;
         return Ok(());
     }
 

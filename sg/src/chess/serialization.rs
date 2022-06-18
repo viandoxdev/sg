@@ -10,7 +10,10 @@ use rsa::{
 };
 use uuid::Uuid;
 
-use super::{message::{Error, Message, Player, Signature, SignedMessage}, game::{Piece, PieceKind, Color}};
+use super::{
+    game::{Color, Piece, PieceKind},
+    message::{Error, Message, Player, Signature, SignedMessage},
+};
 
 pub trait Serialize {
     fn serialize(&self, bytes: &mut Vec<u8>) -> Result<()>;
@@ -155,12 +158,18 @@ impl Deserialize for RsaPrivateKey {
 impl Serialize for Message {
     fn serialize(&self, bytes: &mut Vec<u8>) -> Result<()> {
         match self {
-            Message::NewGameRequest { game_id, public_key } => {
+            Message::NewGameRequest {
+                game_id,
+                public_key,
+            } => {
                 Self::NEW_GAME_REQUEST.serialize(bytes)?;
                 game_id.serialize(bytes)?;
                 public_key.serialize(bytes)?;
             }
-            Message::NewGameApproval { game_id, public_key } => {
+            Message::NewGameApproval {
+                game_id,
+                public_key,
+            } => {
                 Self::NEW_GAME_APPROVAL.serialize(bytes)?;
                 game_id.serialize(bytes)?;
                 public_key.serialize(bytes)?;
@@ -244,7 +253,7 @@ impl Deserialize for Piece {
     fn deserialize(bytes: &mut Cursor<Vec<u8>>) -> Result<Self> {
         Ok(Self {
             kind: PieceKind::deserialize(bytes)?,
-            color: Color::deserialize(bytes)?
+            color: Color::deserialize(bytes)?,
         })
     }
 }

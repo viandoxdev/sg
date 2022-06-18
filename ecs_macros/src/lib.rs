@@ -183,7 +183,8 @@ pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
                     #block;
                 }
             }
-        }.into();
+        }
+        .into();
     } else if &name_str == "pass_many" {
         // sig should be fn pass_many(&mut self, entities: Vec<(... components type)>) -> ()
         let entities_arg = args.next().expect("pass_many needs at least two arguments (fn pass_many(&mut self, entities: Vec<(...components...)>))");

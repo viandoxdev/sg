@@ -87,7 +87,11 @@ impl ECS {
     }
     pub fn borrow_entities(&mut self) -> EntitiesBorrow {
         EntitiesBorrow {
-            inner: self.components.iter_mut().map(|(ty, map)| (*ty, map.iter_mut().map(|(id, e)| (*id, e)).collect())).collect()
+            inner: self
+                .components
+                .iter_mut()
+                .map(|(ty, map)| (*ty, map.iter_mut().map(|(id, e)| (*id, e)).collect()))
+                .collect(),
         }
     }
     pub fn run_systems<S: ToString>(&mut self, category: S) {
@@ -106,7 +110,11 @@ impl ECS {
             // Not using self.borrow_entities as this method borrows the entire ecs, here rust
             // understands that I only borrow the components field.
             system.pass(EntitiesBorrow {
-                inner: self.components.iter_mut().map(|(ty, map)| (*ty, map.iter_mut().map(|(id, e)| (*id, e)).collect())).collect()
+                inner: self
+                    .components
+                    .iter_mut()
+                    .map(|(ty, map)| (*ty, map.iter_mut().map(|(id, e)| (*id, e)).collect()))
+                    .collect(),
             });
             system.post();
         }
@@ -140,7 +148,7 @@ impl Default for ECS {
 }
 
 pub struct EntitiesBorrow<'a> {
-    inner: HashMap<TypeId, HashMap<Uuid, &'a mut Box<dyn Component>>>
+    inner: HashMap<TypeId, HashMap<Uuid, &'a mut Box<dyn Component>>>,
 }
 
 pub struct OwnedEntity {
@@ -204,7 +212,7 @@ pub trait System: Any {
     {
         "<UNAMED_SYSTEM>"
     }
-    fn pass<'a>(&mut self, _entities: EntitiesBorrow<'a>) {}
+    fn pass(&mut self, _entities: EntitiesBorrow) {}
     fn pre(&mut self) {}
     fn post(&mut self) {}
     fn register(&mut self) {}
@@ -247,6 +255,8 @@ impl SystemRequirements {
         let first_required_component = required_components
             .next()
             .expect("Expected at least one required component");
+        // collect is necessary to drop any reference to entities.
+        #[allow(clippy::needless_collect)]
         let uuids = first_required_component
             .filter(|uuid| {
                 required_components.all(|mut other| other.any(|other_uuid| other_uuid == *uuid))
