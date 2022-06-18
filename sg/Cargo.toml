@@ -23,7 +23,8 @@ rsa = "0.6.1"
 sha2 = "0.10.2"
 rand = "0.8.5"
 mio = { version = "0.8.3", features = ["net", "os-poll"] }
-version = "1.0"
+regex = "1.5"
+codespan-reporting = "0.11"
 
 [dependencies.wgpu]
 git = "https://github.com/gfx-rs/wgpu"

@@ -9,6 +9,14 @@ pub enum Projection {
     None,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct CameraInfo {
+    view_projection: Mat4,
+    camera_pos: Vec3,
+    padding: f32,
+}
+
 pub struct Camera {
     position: Vec3,
     rotation: Quat,
@@ -103,11 +111,18 @@ impl Camera {
         };
         self.matrix = projection * view;
     }
+    fn get_info(&self) -> CameraInfo {
+        CameraInfo {
+            view_projection: self.matrix,
+            camera_pos: self.position,
+            padding: 0.0,
+        }
+    }
     fn get_buffer(&self, device: &wgpu::Device) -> &wgpu::Buffer {
         self.buffer.get_or_init(|| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 mapped_at_creation: false,
-                size: 64,
+                size: std::mem::size_of::<CameraInfo>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 label: Some("Camera matrix buffer"),
             })
@@ -119,12 +134,11 @@ impl Camera {
         queue: &wgpu::Queue,
     ) {
         if self.is_dirty() {
-            log::info!("Dirty {:?}", self.position);
             self.recompute_matrix();
             queue.write_buffer(
                 self.get_buffer(device),
                 0,
-                bytemuck::cast_slice(self.matrix.as_ref()),
+                bytemuck::bytes_of(&self.get_info()),
             );
             self.unset_dirty();
         }
@@ -157,7 +171,7 @@ impl Camera {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,

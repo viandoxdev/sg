@@ -1,6 +1,7 @@
-use std::{cell::UnsafeCell, lazy::OnceCell};
+use std::{cell::UnsafeCell, lazy::OnceCell, hash::{Hash, Hasher}, collections::HashMap};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Result, Context};
+use glam::{Vec3, Vec4};
 use image::DynamicImage;
 use slotmap::{SecondaryMap, SlotMap};
 
@@ -9,12 +10,72 @@ slotmap::new_key_type! {
     pub struct TextureSet;
 }
 
+pub enum SingleValuePurpose {
+}
+
+#[derive(PartialEq, Clone, Copy)]
+pub enum SingleValue {
+    /// The value represents a color (implies TextureFormat::Rgba8UnormSrgb)
+    Color(Vec4),
+    /// The value represents a normal (implies TextureFormat::Rgba8Unorm)
+    Normal(Vec3),
+    /// The value is any single float (implies TextureFormat::R32Float)
+    Float(f32),
+    /// The value represents a single float from 0 to 1 (implies TextureFormat::R8Unorm)
+    Factor(f32),
+}
+
+impl SingleValue {
+    fn format(&self) -> wgpu::TextureFormat {
+        match self {
+            Self::Color(_) => wgpu::TextureFormat::Rgba8UnormSrgb,
+            Self::Normal(_) => wgpu::TextureFormat::Rgba8Unorm,
+            Self::Float(_) => wgpu::TextureFormat::R32Float,
+            Self::Factor(_) => wgpu::TextureFormat::R8Unorm,
+        }
+    }
+}
+
+impl Hash for SingleValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            SingleValue::Color(c) => {
+                state.write_u8(0);
+                [
+                    c.x.to_bits(),
+                    c.y.to_bits(),
+                    c.z.to_bits(),
+                    c.w.to_bits(),
+                ].hash(state);
+            }
+            SingleValue::Normal(n) => {
+                state.write_u8(1);
+                [
+                    n.x.to_bits(),
+                    n.y.to_bits(),
+                    n.z.to_bits(),
+                ].hash(state);
+            }
+            SingleValue::Float(f) => {
+                state.write_u8(2);
+                f.to_bits().hash(state);
+            }
+            SingleValue::Factor(f) => {
+                state.write_u8(3);
+                f.to_bits().hash(state);
+            }
+        }
+    }
+}
+
+impl Eq for SingleValue {}
+
 pub struct TextureManager {
     textures: SlotMap<TextureHandle, wgpu::TextureView>,
     /// All sets existing in the TextureManager (mapped to their textures)
     sets: SlotMap<TextureSet, Vec<TextureHandle>>,
     /// The set mapped to each texture
-    textures_set: SecondaryMap<TextureHandle, TextureSet>,
+    textures_set: SecondaryMap<TextureHandle, Vec<TextureSet>>,
     /// currently cached set bind_groups, all groups have to be valid (i.e. contain all textures
     /// assigned to the set)
     cache_bind_groups: UnsafeCell<SecondaryMap<TextureSet, wgpu::BindGroup>>,
@@ -22,6 +83,10 @@ pub struct TextureManager {
     bind_group_layout: OnceCell<wgpu::BindGroupLayout>,
     /// Cache for sampler
     sampler: OnceCell<wgpu::Sampler>,
+    /// Cache for single value textures
+    single_value_cache: HashMap<SingleValue, TextureHandle>,
+    /// Same but opposit direction
+    texture_value: SecondaryMap<TextureHandle, SingleValue>,
 }
 
 impl TextureManager {
@@ -36,6 +101,8 @@ impl TextureManager {
             cache_bind_groups: UnsafeCell::new(SecondaryMap::new()),
             bind_group_layout: OnceCell::new(),
             sampler: OnceCell::new(),
+            single_value_cache: HashMap::new(),
+            texture_value: SecondaryMap::new(),
         }
     }
 
@@ -49,43 +116,91 @@ impl TextureManager {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         img: DynamicImage,
-        set: TextureSet,
-    ) -> Result<TextureHandle> {
-        let tex = self.create_texture(device, queue, img);
-        self.add_texture(tex, set)
+    ) -> TextureHandle {
+        let tex = Self::create_texture(device, queue, img);
+        self.add_texture(tex)
     }
 
     pub fn add_depth_texture(
         &mut self,
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
-        set: TextureSet,
-    ) -> Result<TextureHandle> {
-        let tex = self.create_depth_texture(device, config);
-        self.add_texture(tex, set)
+    ) -> TextureHandle {
+        let tex = Self::create_depth_texture(device, config);
+        self.add_texture(tex)
+    }
+
+    /// Return a handle to a texture with the SingleValue as contant, may create it if needed
+    /// A SingleValue texture is a 1x1 pixel texture with a specific value.
+    pub fn get_or_add_single_value_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        value: SingleValue,
+    ) -> TextureHandle {
+        match self.single_value_cache.get(&value) {
+            Some(handle) => *handle,
+            None => {
+                let tex = Self::create_single_value_texture(device, queue, value);
+                let handle = self.add_texture(tex);
+                self.single_value_cache.insert(value, handle);
+                self.texture_value.insert(handle, value);
+                handle
+            }
+        }
     }
 
     /// Add a texture to the TextureManager and assign it to a set
-    pub fn add_texture(
-        &mut self,
-        tex: wgpu::TextureView,
-        set: TextureSet,
-    ) -> Result<TextureHandle> {
-        // prematurely abort if set isn't known to avoid having a set-less texture
-        if !self.sets.contains_key(set) {
-            return Err(anyhow!("Trying to add texture to unknown set"));
-        }
-
+    pub fn add_texture(&mut self, tex: wgpu::TextureView) -> TextureHandle {
         let handle = self.textures.insert(tex);
-        self.sets.get_mut(set).unwrap().push(handle);
-        self.textures_set.insert(handle, set);
-        // delete bind group as it is no longer valid
-        self.cache_bind_groups.get_mut().remove(set);
-        Ok(handle)
+        self.textures_set.insert(handle, Vec::new());
+        handle
+    }
+
+    pub fn add_texture_to_set(&mut self, tex: TextureHandle, set: TextureSet) -> Result<()> {
+        self.textures.get(tex).context("No such texture")?;
+        self.sets.get_mut(set).context("No such set")?
+            .push(tex);
+        self.textures_set.get_mut(tex).unwrap().push(set);
+        Ok(())
     }
 
     pub fn get_view(&self, tex: TextureHandle) -> Option<&wgpu::TextureView> {
         self.textures.get(tex)
+    }
+
+    /// Swap the tetures of a and b, making the texture of a go to b and the texture of b go to a
+    pub fn swap(&mut self, a: TextureHandle, b: TextureHandle) -> Result<()> {
+        // delete cached bind groups
+        let sets = self.textures_set.get(a).context("No such texture")?
+            .iter().chain(self.textures_set.get(b).context("No such texture")?.iter());
+        for set in sets {
+            self.cache_bind_groups.get_mut().remove(*set);
+        }
+        {
+            let [ma, mb] = self.textures.get_disjoint_mut([a, b]).unwrap();
+            std::mem::swap(
+                ma,
+                mb,
+            );
+        }
+        let av = self.texture_value.get(a).copied();
+        let bv = self.texture_value.get(b).copied();
+
+        if let Some(value) = av {
+            self.texture_value.insert(b, value);
+            self.single_value_cache.insert(value, b);
+        } else {
+            self.texture_value.remove(b);
+        }
+
+        if let Some(value) = bv {
+            self.texture_value.insert(a, value);
+            self.single_value_cache.insert(value, a);
+        } else {
+            self.texture_value.remove(a);
+        }
+        Ok(())
     }
 
     pub fn replace_texture(
@@ -96,9 +211,17 @@ impl TextureManager {
         *self
             .textures
             .get_mut(tex)
-            .ok_or_else(|| anyhow!("Can't replace unknown texture"))? = new_tex;
-        let set = self.get_set_of_texture(tex).expect("Texture has no set.");
-        self.cache_bind_groups.get_mut().remove(set); // delete cache has it has a reference to the old view.
+            .context("Can't replace unknown texture")? = new_tex;
+        for set in self.textures_set.get(tex).unwrap() {
+            // delete cache as it has a reference to the old view.
+            self.cache_bind_groups.get_mut().remove(*set);
+        }
+        // If this texture was a single value texture, forget about it as we have no way of telling
+        // if it is still the case
+        if let Some(value) = self.texture_value.get(tex) {
+            self.single_value_cache.remove(value);
+            self.texture_value.remove(tex);
+        }
         Ok(())
     }
 
@@ -186,39 +309,37 @@ impl TextureManager {
         bindgroups.get(set).unwrap()
     }
 
-    pub fn get_set_of_texture(&self, tex: TextureHandle) -> Option<TextureSet> {
-        Some(*self.textures_set.get(tex)?)
-    }
-    pub fn get_index_of_texture(&self, tex: TextureHandle) -> Option<usize> {
-        self.sets.get(self.get_set_of_texture(tex)?)?.iter().position(|a| *a == tex)
+    pub fn get_index_of_texture(&self, tex: TextureHandle, set: TextureSet) -> Option<usize> {
+        self.sets.get(set)?.iter().position(|a| *a == tex)
     }
 
     pub fn remove_texture(&mut self, tex: TextureHandle) -> Result<wgpu::TextureView> {
         let res = self
             .textures
             .remove(tex)
-            .ok_or_else(|| anyhow!("Trying to remove unknown texture."))?; // remove wgpu texture
-        let set = self
-            .textures_set
-            .remove(tex)
-            .expect("Texture doesn't have set."); // remove set from texture
-                                                  // unwraps here are safe because the caches has to be valid.
-        let index = self
-            .sets
-            .get(set)
-            .unwrap()
-            .iter()
-            .position(|s| *s == tex)
-            .unwrap();
-        self.sets.get_mut(set).unwrap().remove(index); // remove texture from set
-        self.cache_bind_groups.get_mut().remove(set); // delete cached bind group as it is no longer valid and needs to be recreated
+            .context("Trying to remove unknown texture.")?; // remove wgpu texture
+        for set in self.textures_set.remove(tex).unwrap() {
+            let index = self
+                .sets
+                .get(set)
+                .unwrap()
+                .iter()
+                .position(|s| *s == tex)
+                .unwrap();
+            self.sets.get_mut(set).unwrap().remove(index); // remove texture from set
+            self.cache_bind_groups.get_mut().remove(set); // delete cached bind group as it is no longer valid and needs to be recreated
+        }
+        if let Some(value) = self.texture_value.get(tex) {
+            self.single_value_cache.remove(value);
+            self.texture_value.remove(tex);
+        }
         Ok(res)
     }
-    pub fn create_single_color_texture(
-        &self,
+
+    pub fn create_single_value_texture(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        color: [u8; 4]
+        value: SingleValue,
     ) -> wgpu::TextureView {
         let size = wgpu::Extent3d {
             width: 1,
@@ -231,10 +352,33 @@ impl TextureManager {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: value.format(),
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             label: Some("TextureManager texture"),
         });
+
+        let data = match value {
+            SingleValue::Color(c) => {
+                let c = c.clamp(Vec4::splat(0.0), Vec4::splat(1.0));
+                vec![
+                    (c.x * 255.0) as u8,
+                    (c.y * 255.0) as u8,
+                    (c.z * 255.0) as u8,
+                    (c.w * 255.0) as u8,
+                ]
+            }
+            SingleValue::Normal(n) => {
+                let n = n.normalize() * Vec3::splat(0.5) + Vec3::splat(0.5);
+                vec![
+                    (n.x * 255.0) as u8,
+                    (n.y * 255.0) as u8,
+                    (n.z * 255.0) as u8,
+                    0u8,
+                ]
+            }
+            SingleValue::Float(f) => bytemuck::bytes_of(&f).to_vec(),
+            SingleValue::Factor(f) => vec![(f.clamp(0.0, 1.0) * 255.0) as u8],
+        };
 
         queue.write_texture(
             wgpu::ImageCopyTexture {
@@ -243,10 +387,10 @@ impl TextureManager {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            bytemuck::cast_slice(&color),
+            &data,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: std::num::NonZeroU32::new(4),
+                bytes_per_row: std::num::NonZeroU32::new(data.len() as u32),
                 rows_per_image: std::num::NonZeroU32::new(1),
             },
             size,
@@ -256,7 +400,6 @@ impl TextureManager {
     }
 
     pub fn create_texture(
-        &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         img: DynamicImage,
@@ -302,7 +445,6 @@ impl TextureManager {
     }
 
     pub fn create_depth_texture(
-        &self,
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
     ) -> wgpu::TextureView {

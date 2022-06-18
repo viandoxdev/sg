@@ -3,10 +3,13 @@
 #![allow(incomplete_features)]
 #![allow(dead_code)]
 
+use std::collections::VecDeque;
+
 use glam::{Quat, Vec3, Vec4};
 use systems::graphics::mesh_manager::{Mesh, Primitives};
+use systems::graphics::texture_manager::SingleValue;
 use systems::{LoggingSystem, GravitySystem, CenterSystem};
-use systems::graphics::{GraphicSystem, Vertex, Light, PointLight};
+use systems::graphics::{GraphicSystem, Vertex, Light, PointLight, DiretionalLight, SpotLight};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
@@ -32,30 +35,43 @@ async fn run(mut ecs: ECS) {
 
     {
         let gfx = ecs.get_system_mut::<GraphicSystem>().unwrap();
+
         let mesh = Mesh::new_cube();
-        let square = gfx.mesh_manager.add(
-            &gfx.device, &mesh
-        );
-        let set = gfx.texture_manager.add_set();
-        let tex = gfx.texture_manager.create_single_color_texture(&gfx.device, &gfx.queue, [255, 0, 0, 255]);
-        gfx.texture_manager.add_texture(tex, set).unwrap();
+        let mesh = gfx.mesh_manager.add(&gfx.device, &mesh);
+        
+        let albedo = image::open("albedo.png").unwrap().flipv();
+        let albedo = gfx.texture_manager.add_image_texture(&gfx.device, &gfx.queue, albedo);
+        let norm = image::open("norm.png").unwrap().flipv();
+        let norm = gfx.texture_manager.add_image_texture(&gfx.device, &gfx.queue, norm);
+        let met = gfx.texture_manager.get_or_add_single_value_texture(&gfx.device, &gfx.queue, SingleValue::Factor(0.0));
+        let roughness = image::open("roughness.png").unwrap().flipv();
+        let roughness = gfx.texture_manager.add_image_texture(&gfx.device, &gfx.queue, roughness);
+        let ao = image::open("ao.png").unwrap().flipv();
+        let ao = gfx.texture_manager.add_image_texture(&gfx.device, &gfx.queue, ao);
+        
+        let gfc = GraphicsComponent::new(mesh, albedo, Some(norm), met, roughness, Some(ao), gfx).unwrap();
+        
         let mut tsm = TransformsComponent::new();
-        tsm.set_translation(Vec3::new(0.0, 0.0, 3.0));
+        tsm.set_translation(Vec3::new(0.0, 0.0, 0.0));
+        
         entity = ecs.new_entity();
-        ecs.add_component(
-            entity,
-            GraphicsComponent {
-                mesh: square,
-                textures: set,
-            },
-        );
+        ecs.add_component(entity, gfc);
         ecs.add_component(entity, tsm);
     }
 
-    let light = ecs.new_entity();
-    ecs.add_component(light, LightComponent {
-        light: Light::Point(PointLight::new(Vec3::new(0.0, 0.0, 2.0), Vec4::new(1.0, 1.0, 1.0, 1.0)))
-    });
+    let pos = [
+        Vec3::new( 1.0,  1.0, 0.0),
+        Vec3::new(-1.0,  1.0, 0.0),
+        Vec3::new(-1.0, -1.0, 0.0),
+        Vec3::new( 1.0, -1.0, 0.0),
+    ];
+    let lc = Vec4::splat(13.0);
+    for pos in pos {
+        let light = ecs.new_entity();
+        ecs.add_component(light, LightComponent {
+            light: Light::Point(PointLight::new(pos, lc))
+        });
+    }
 
     let mut count = 0f64;
 
@@ -66,11 +82,12 @@ async fn run(mut ecs: ECS) {
 
             ecs.get_component_mut::<TransformsComponent>(entity)
                 .unwrap()
-                .set_rotation(Quat::from_rotation_y(count as f32 / 500.0));
+                .set_rotation(Quat::from_rotation_y((count as f32 / 300.0).cos()));
             ecs.get_component_mut::<TransformsComponent>(entity)
                 .unwrap()
-                .set_translation(Vec3::new(0.0, (count / 100.0).cos() as f32 / 1.0, 3.0));
+                .set_translation(Vec3::new(0.0, (count / 100.0).cos() as f32 / 2.0, 2.0));
             let gfx = ecs.get_system_mut::<GraphicSystem>().unwrap();
+
             match gfx.feedback() {
                 Ok(_) => {}
                 Err(wgpu::SurfaceError::Lost) => gfx.resize(gfx.size),

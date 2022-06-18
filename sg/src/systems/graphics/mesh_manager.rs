@@ -41,24 +41,19 @@ impl Mesh {
         }
     }
     pub fn recompute_normals(&mut self) {
-        let mut normals = vec![(Vec3::ZERO, 0f32); self.vertices.len()];
+        let mut normals = vec![Vec3::ZERO; self.vertices.len()];
         for tri in &self.indices {
             let p1 = self.vertices[tri[0] as usize].position;
             let p2 = self.vertices[tri[1] as usize].position;
             let p3 = self.vertices[tri[2] as usize].position;
             let normal = (p3 - p1).cross(p2 - p1).normalize();
-            normals[tri[0] as usize].0 += normal;
-            normals[tri[0] as usize].1 += 1.0;
-            normals[tri[1] as usize].0 += normal;
-            normals[tri[1] as usize].1 += 1.0;
-            normals[tri[2] as usize].0 += normal;
-            normals[tri[2] as usize].1 += 1.0;
+            normals[tri[0] as usize] += normal;
+            normals[tri[1] as usize] += normal;
+            normals[tri[2] as usize] += normal;
         }
         // average out the normals
-        for (i, (acc, n)) in normals.into_iter().enumerate() {
-            if n != 0.0 { // This is not an unused vertex
-                self.vertices[i].normal = acc / n;
-            }
+        for (i, acc) in normals.into_iter().enumerate() {
+            self.vertices[i].normal = acc.normalize_or_zero();
         }
     }
     /// Merge the vertices of a mesh, giving it a smooth look (from normal interpolation)
@@ -81,11 +76,46 @@ impl Mesh {
         }
         let mut res = Self { vertices, indices };
         res.recompute_normals();
+        res.recompute_tangents();
         res
+    }
+    pub fn recompute_tangents(&mut self) {
+        let mut tangents = vec![Vec3::ZERO; self.vertices.len()];
+        for tri in &self.indices {
+            let v1 = self.vertices[tri[0] as usize];
+            let v2 = self.vertices[tri[1] as usize];
+            let v3 = self.vertices[tri[2] as usize];
+            let (p1, p2, p3) = (v1.position, v2.position, v3.position);
+            let (uv1, uv2, uv3) = (v1.tex_coords, v2.tex_coords, v3.tex_coords);
+            let e1 = p2 - p1;
+            let e2 = p3 - p1;
+            let duv1 = uv2 - uv1;
+            let duv2 = uv3 - uv1;
+            let fi = duv1.x * duv2.y - duv2.x * duv1.y;
+            let f = if fi == 0.0 { 1.0 } else { 1.0 / fi };
+            let t = Vec3::new(
+                f * (duv2.y * e1.x - duv1.y * e2.x),
+                f * (duv2.y * e1.y - duv1.y * e2.y),
+                f * (duv2.y * e1.z - duv1.y * e2.z),
+            );
+            tangents[tri[0] as usize] += t;
+            tangents[tri[1] as usize] += t;
+            tangents[tri[2] as usize] += t;
+        }
+        // average out the tangents
+        for (i, acc) in tangents.into_iter().enumerate() {
+            let acc = acc.normalize_or_zero();
+            if acc.is_normalized() { 
+                self.vertices[i].tangent = acc;
+            } else {
+                self.vertices[i].tangent = Vec3::new(1.0, 0.0, 0.0) // should not be full of 0
+            }
+        }
     }
 }
 pub trait Primitives {
     fn new_icosphere(detail: u32) -> Self;
+    fn new_cubic_sphere(detail: u32) -> Self;
     fn new_cube() -> Self;
 }
 
@@ -99,16 +129,16 @@ impl Primitives for Mesh {
                 Vertex {
                     position: Vec3::new($a, $b, $c),
                     normal: Vec3::new($a, $b, $c),
-                    // TODO: add tex coords
-                    tex_coords: Vec2::new(0.0, 0.0)
+                    tex_coords: Vec2::ZERO,
+                    tangent: Vec3::ZERO,
                 }
             };
             ($v:ident) => {
                 Vertex {
                     position: $v,
                     normal: $v,
-                    // TODO: add tex coords
-                    tex_coords: Vec2::new(0.0, 0.0)
+                    tex_coords: Vec2::ZERO,
+                    tangent: Vec3::ONE,
                 }
             };
         }
@@ -134,17 +164,17 @@ impl Primitives for Mesh {
                 let p4 = p1.lerp(p2, 0.5).normalize(); // halfway point p1 -> p2
                 let p5 = p2.lerp(p3, 0.5).normalize(); // normalize to keep the vertices on the unit sphere
                 let p6 = p3.lerp(p1, 0.5).normalize();
-                //      p1
-                //   1. /\
-                //  p6 /__\ p4
-                // 2. /\3./\ 4.
-                //p3 /__\/__\ p2
-                //      p5
+                //       p1
+                //    1. /\
+                //   p6 /__\ p4
+                //  2. /\3./\ 4.
+                // p3 /__\/__\ p2
+                //       p5
                 indices.extend_from_slice(&[
-                    [i1, i4, i6],
-                    [i6, i5, i3],
-                    [i6, i4, i5],
-                    [i4, i2, i5]
+                    [i1, i4, i6], // 1.
+                    [i6, i5, i3], // 2.
+                    [i6, i4, i5], // 3.
+                    [i4, i2, i5]  // 4.
                 ]);
                 vertices.extend_from_slice(&[v!(p4), v!(p5), v!(p6)]);
             }
@@ -154,6 +184,89 @@ impl Primitives for Mesh {
             indices,
         }
     }
+    fn new_cubic_sphere(detail: u32) -> Self {
+        macro_rules! v {
+            ($v:expr) => {
+                Vertex {
+                    position: $v,
+                    normal: $v,
+                    tex_coords: Vec2::ZERO,
+                    tangent: Vec3::ZERO,
+                }
+            };
+            ($x:expr, $y:expr, $z:expr) => {
+                v!(Vec3::new($x, $y, $z))
+            };
+        }
+        const L: f32 = 0.57735026918963; // 1/sqrt(3)
+        let mut vertices = vec![
+            v![ L,  L, -L], v![-L,  L, -L], v![-L, -L, -L], v![ L, -L, -L],
+            v![-L,  L,  L], v![ L,  L,  L], v![ L, -L,  L], v![-L, -L,  L],
+        ];
+        let mut quads = vec![
+            [0, 1, 2, 3], // front
+            [4, 5, 6, 7], // back
+            [5, 0, 3, 6], // right
+            [1, 4, 7, 2], // left
+            [5, 4, 1, 0], // top
+            [3, 2, 7, 6], // bottom
+        ];
+        for _ in 0..detail {
+            for _ in 0..quads.len() {
+                let quad = quads.remove(0);
+                // indices of the points in the vertices array
+                let (i1, i2, i3, i4) = (quad[0], quad[1], quad[2], quad[3]);
+                let i5 = vertices.len() as u16;
+                let (i6, i7, i8, i9) = (i5 + 1, i5 + 2, i5 + 3, i5 + 4);
+                let p1 = vertices[i1 as usize].position;
+                let p2 = vertices[i2 as usize].position;
+                let p3 = vertices[i3 as usize].position;
+                let p4 = vertices[i4 as usize].position;
+                let p5 = p1.lerp(p3, 0.5); // middle of a diagonal
+                let p6 = p2.lerp(p1, 0.5); // all the points lie on the unit
+                let p7 = p2.lerp(p3, 0.5); // sphere
+                let p8 = p3.lerp(p4, 0.5);
+                let p9 = p4.lerp(p1, 0.5);
+                //          p6
+                //  p2┌──────┬──────┐p1
+                //    │  2.  │   1. │
+                //    │      │p5    │
+                //  p7├──────┼──────┤p9
+                //    │  3.  │   4. │
+                //    │      │      │
+                //  p3└──────┴──────┘p4
+                //           p8
+                quads.extend_from_slice(&[
+                    [i1, i6, i5, i9], // 1.
+                    [i6, i2, i7, i5], // 2.
+                    [i5, i7, i3, i8], // 3.
+                    [i9, i5, i8, i4], // 4.
+                ]);
+                vertices.extend_from_slice(&[
+                    v!(p5), v!(p6), v!(p7), v!(p8), v!(p9)
+                ]);
+            }
+        }
+        for vert in &mut vertices {
+            vert.position = vert.position.normalize();
+            vert.normal = vert.normal.normalize();
+            let d = -vert.position;
+            vert.tex_coords.x = 0.5 - d.x.atan2(d.z) / std::f32::consts::TAU;
+            vert.tex_coords.y = 0.5 + d.y.asin() / std::f32::consts::PI;
+        }
+        // quads, but for triangles 
+        let mut indices = Vec::new();
+        for quad in quads {
+            indices.push([quad[0], quad[1], quad[2]]);
+            indices.push([quad[0], quad[2], quad[3]]);
+        }
+        let mut res = Self {
+            indices,
+            vertices
+        };
+        res.recompute_tangents();
+        res
+    }
     fn new_cube() -> Self {
         macro_rules! v {
             ($p:tt $n:tt $t:tt) => {
@@ -161,10 +274,11 @@ impl Primitives for Mesh {
                     position: Vec3::from($p),
                     normal: Vec3::from($n),
                     tex_coords: Vec2::from($t),
+                    tangent: Vec3::ZERO,
                 }
             };
         }
-        Self {
+        let mut res = Self {
             vertices: vec![
                 // Front face
                 v!([ 0.5,  0.5, -0.5] [ 0.0,  0.0, -1.0] [0.0, 0.0]),
@@ -178,24 +292,24 @@ impl Primitives for Mesh {
                 v!([-0.5, -0.5,  0.5] [ 0.0,  0.0,  1.0] [0.0, 1.0]),
                 // Right face
                 v!([ 0.5,  0.5,  0.5] [ 1.0,  0.0,  0.0] [0.0, 0.0]),
-                v!([ 0.5,  0.5, -0.5] [ 1.0,  0.0,  1.0] [1.0, 0.0]),
-                v!([ 0.5, -0.5, -0.5] [ 1.0,  0.0,  1.0] [1.0, 1.0]),
-                v!([ 0.5, -0.5,  0.5] [ 1.0,  0.0,  1.0] [0.0, 1.0]),
+                v!([ 0.5,  0.5, -0.5] [ 1.0,  0.0,  0.0] [1.0, 0.0]),
+                v!([ 0.5, -0.5, -0.5] [ 1.0,  0.0,  0.0] [1.0, 1.0]),
+                v!([ 0.5, -0.5,  0.5] [ 1.0,  0.0,  0.0] [0.0, 1.0]),
                 // Left face
                 v!([-0.5,  0.5, -0.5] [-1.0,  0.0,  0.0] [0.0, 0.0]),
-                v!([-0.5,  0.5,  0.5] [-1.0,  0.0,  1.0] [1.0, 0.0]),
-                v!([-0.5, -0.5,  0.5] [-1.0,  0.0,  1.0] [1.0, 1.0]),
-                v!([-0.5, -0.5, -0.5] [-1.0,  0.0,  1.0] [0.0, 1.0]),
+                v!([-0.5,  0.5,  0.5] [-1.0,  0.0,  0.0] [1.0, 0.0]),
+                v!([-0.5, -0.5,  0.5] [-1.0,  0.0,  0.0] [1.0, 1.0]),
+                v!([-0.5, -0.5, -0.5] [-1.0,  0.0,  0.0] [0.0, 1.0]),
                 // Top face
                 v!([-0.5,  0.5,  0.5] [ 0.0,  1.0,  0.0] [0.0, 0.0]),
-                v!([-0.5,  0.5, -0.5] [ 0.0,  1.0,  1.0] [1.0, 0.0]),
-                v!([ 0.5,  0.5, -0.5] [ 0.0,  1.0,  1.0] [1.0, 1.0]),
-                v!([ 0.5,  0.5,  0.5] [ 0.0,  1.0,  1.0] [0.0, 1.0]),
+                v!([-0.5,  0.5, -0.5] [ 0.0,  1.0,  0.0] [1.0, 0.0]),
+                v!([ 0.5,  0.5, -0.5] [ 0.0,  1.0,  0.0] [1.0, 1.0]),
+                v!([ 0.5,  0.5,  0.5] [ 0.0,  1.0,  0.0] [0.0, 1.0]),
                 // Bottom face
                 v!([-0.5, -0.5, -0.5] [ 0.0, -1.0,  0.0] [0.0, 0.0]),
-                v!([-0.5, -0.5,  0.5] [ 0.0, -1.0,  1.0] [1.0, 0.0]),
-                v!([ 0.5, -0.5,  0.5] [ 0.0, -1.0,  1.0] [1.0, 1.0]),
-                v!([ 0.5, -0.5, -0.5] [ 0.0, -1.0,  1.0] [0.0, 1.0]),
+                v!([-0.5, -0.5,  0.5] [ 0.0, -1.0,  0.0] [1.0, 0.0]),
+                v!([ 0.5, -0.5,  0.5] [ 0.0, -1.0,  0.0] [1.0, 1.0]),
+                v!([ 0.5, -0.5, -0.5] [ 0.0, -1.0,  0.0] [0.0, 1.0]),
             ],
             indices: vec![
                 [ 0,  1,  2], [ 0,  2,  3],
@@ -205,7 +319,9 @@ impl Primitives for Mesh {
                 [16, 17, 18], [16, 18, 19],
                 [20, 21, 22], [20, 22, 23],
             ]
-        }
+        };
+        res.recompute_tangents();
+        res
     }
 }
 

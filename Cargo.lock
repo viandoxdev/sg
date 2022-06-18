@@ -1551,6 +1551,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "codespan-reporting",
  "ecs",
  "glam",
  "image",
@@ -1560,11 +1561,11 @@ dependencies = [
  "pollster",
  "pretty_env_logger",
  "rand",
+ "regex",
  "rsa",
  "sha2",
  "slotmap",
  "uuid",
- "version",
  "wgpu",
  "winit",
 ]
@@ -1757,12 +1758,6 @@ dependencies = [
  "getrandom",
  "rand",
 ]
-
-[[package]]
-name = "version"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7b56f03483e2ceef325e8a83579f3c7222dde8e6533ab5402143555ef89d033"
 
 [[package]]
 name = "version_check"
