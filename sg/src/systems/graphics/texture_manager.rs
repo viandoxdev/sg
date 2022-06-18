@@ -1,6 +1,6 @@
 use std::{cell::UnsafeCell, lazy::OnceCell, hash::{Hash, Hasher}, collections::HashMap};
 
-use anyhow::{anyhow, Result, Context};
+use anyhow::{Result, Context};
 use glam::{Vec3, Vec4};
 use image::DynamicImage;
 use slotmap::{SecondaryMap, SlotMap};
