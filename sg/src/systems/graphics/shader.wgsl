@@ -145,12 +145,13 @@ fn point_light(light: PointLight, normal: vec3<f32>, albedo: vec3<f32>, metallic
 
 @fragment
 fn fs_main(v_in: VertexOutput) -> @location(0) vec4<f32> {
-    let normal = textureSample(g_normals, g_sampler, v_in.uv).xyz;
-    let albedo = textureSample(g_albedo, g_sampler, v_in.uv).xyz;
-    let metallic = textureSample(g_mra, g_sampler, v_in.uv).x;
-    let roughness = textureSample(g_mra, g_sampler, v_in.uv).y;
-    let ao = textureSample(g_mra, g_sampler, v_in.uv).z;
-    let pos = textureSample(g_position, g_sampler, v_in.uv).xyz;
+    let uv = vec2<f32>(v_in.uv.x, 1.0 - v_in.uv.y);
+    let normal = textureSample(g_normals, g_sampler, uv).xyz;
+    let albedo = textureSample(g_albedo, g_sampler, uv).xyz;
+    let metallic = textureSample(g_mra, g_sampler, uv).x;
+    let roughness = textureSample(g_mra, g_sampler, uv).y;
+    let ao = textureSample(g_mra, g_sampler, uv).z;
+    let pos = textureSample(g_position, g_sampler, uv).xyz;
 
     let view_dir = normalize(cam.pos - pos);
     var l = vec3<f32>(0.0);

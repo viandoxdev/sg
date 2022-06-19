@@ -175,9 +175,7 @@ impl System for GraphicSystem {
             => GraphicsComponent;
             ? TransformsComponent;
         );
-        let lights = filter_components!(entities
-            => LightComponent;
-        );
+        let lights = filter_components!(entities => LightComponent);
 
         let mut lights_changed = lights.len() != self.lights_cache.len();
         for id in lights.keys() {
@@ -241,7 +239,7 @@ impl System for GraphicSystem {
                     let cam_bindgroup = self.camera.get_bind_group(&self.device);
 
                     render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                    render_pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
+                    render_pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                     render_pass.set_bind_group(0, tex_bindgroup, &[]);
                     render_pass.set_bind_group(1, cam_bindgroup, &[]);
                     render_pass.set_push_constants(

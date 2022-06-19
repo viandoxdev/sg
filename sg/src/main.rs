@@ -23,65 +23,74 @@ async fn run(mut ecs: ECS) {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
 
-    let gfx = GraphicSystem::new(&window).await;
+    let mut gfx = GraphicSystem::new(&window).await;
+    gfx.camera.set_position(Vec3::new(0.0, 7.0, -8.0));
+    let entities = gltf::open("model.glb", &mut gfx).expect("Error");
     ecs.register_system(gfx, "graphics");
     ecs.register_component::<TransformsComponent>();
     ecs.register_component::<GraphicsComponent>();
     ecs.register_component::<LightComponent>();
 
-    let a = gltf::open("model.glb");
-
-    let entity;
-
-    {
-        let gfx = ecs.get_system_mut::<GraphicSystem>().unwrap();
-
-        let mesh = gfx.mesh_manager.add(&gfx.device, &Mesh::new_cube());
-        let material = {
-            let albedo = image::open("albedo.png").unwrap().flipv();
-            let albedo = gfx
-                .texture_manager
-                .add_image_texture(&gfx.device, &gfx.queue, albedo);
-            let norm = image::open("norm.png").unwrap().flipv();
-            let norm = gfx
-                .texture_manager
-                .add_image_texture(&gfx.device, &gfx.queue, norm);
-            let met = gfx.texture_manager.get_or_add_single_value_texture(
-                &gfx.device,
-                &gfx.queue,
-                SingleValue::Factor(0.0),
-            );
-            let roughness = image::open("roughness.png").unwrap().flipv();
-            let roughness = gfx
-                .texture_manager
-                .add_image_texture(&gfx.device, &gfx.queue, roughness);
-            let ao = image::open("ao.png").unwrap().flipv();
-            let ao = gfx
-                .texture_manager
-                .add_image_texture(&gfx.device, &gfx.queue, ao);
-            Material::new(albedo, Some(norm), met, roughness, Some(ao), gfx).unwrap()
-        };
-
-        let gfc = GraphicsComponent {
-            mesh,
-            material,
-        };
-
-        let mut tsm = TransformsComponent::new();
-        tsm.set_translation(Vec3::new(0.0, 0.0, 0.0));
-
-        entity = ecs.new_entity();
-        ecs.add_component(entity, gfc);
-        ecs.add_component(entity, tsm);
+    for entity in entities {
+        ecs.add_entity(entity);
     }
 
+    //let entity;
+
+    //{
+    //    let gfx = ecs.get_system_mut::<GraphicSystem>().unwrap();
+
+    //    let mesh = gfx.mesh_manager.add(&gfx.device, &Mesh::new_cube());
+    //    let material = {
+    //        let albedo = image::open("albedo.png").unwrap().flipv();
+    //        let albedo = gfx
+    //            .texture_manager
+    //            .add_image_texture(&gfx.device, &gfx.queue, albedo);
+    //        let norm = image::open("norm.png").unwrap().flipv();
+    //        let norm = gfx
+    //            .texture_manager
+    //            .add_image_texture(&gfx.device, &gfx.queue, norm);
+    //        let met = gfx.texture_manager.get_or_add_single_value_texture(
+    //            &gfx.device,
+    //            &gfx.queue,
+    //            SingleValue::Factor(0.0),
+    //        );
+    //        let roughness = image::open("roughness.png").unwrap().flipv();
+    //        let roughness = gfx
+    //            .texture_manager
+    //            .add_image_texture(&gfx.device, &gfx.queue, roughness);
+    //        let ao = image::open("ao.png").unwrap().flipv();
+    //        let ao = gfx
+    //            .texture_manager
+    //            .add_image_texture(&gfx.device, &gfx.queue, ao);
+    //        Material::new(albedo, Some(norm), met, roughness, Some(ao), gfx).unwrap()
+    //    };
+
+    //    let gfc = GraphicsComponent {
+    //        mesh,
+    //        material,
+    //    };
+
+    //    let mut tsm = TransformsComponent::new();
+    //    tsm.set_translation(Vec3::new(0.0, 0.0, 0.0));
+
+    //    entity = ecs.new_entity();
+    //    ecs.add_component(entity, gfc);
+    //    ecs.add_component(entity, tsm);
+    //}
+
     let pos = [
-        Vec3::new(1.0, 1.0, 0.0),
-        Vec3::new(-1.0, 1.0, 0.0),
-        Vec3::new(-1.0, -1.0, 0.0),
-        Vec3::new(1.0, -1.0, 0.0),
+        Vec3::new( 1.0,  1.0, -3.0),
+        Vec3::new(-1.0,  1.0, -3.0),
+        Vec3::new(-1.0, -1.0, -3.0),
+        Vec3::new( 1.0, -1.0, -3.0),
+
+        Vec3::new( 1.0, 4.0, -3.0),
+        Vec3::new(-1.0, 4.0, -3.0),
+        Vec3::new(-1.0, 2.0, -3.0),
+        Vec3::new( 1.0, 2.0, -3.0),
     ];
-    let lc = Vec4::splat(13.0);
+    let lc = Vec4::splat(27.0);
     for pos in pos {
         let light = ecs.new_entity();
         ecs.add_component(
@@ -99,12 +108,12 @@ async fn run(mut ecs: ECS) {
             count += 1.0;
             ecs.run_systems("graphics");
 
-            ecs.get_component_mut::<TransformsComponent>(entity)
-                .unwrap()
-                .set_rotation(Quat::from_rotation_y((count as f32 / 300.0).cos()));
-            ecs.get_component_mut::<TransformsComponent>(entity)
-                .unwrap()
-                .set_translation(Vec3::new(0.0, (count / 100.0).cos() as f32 / 2.0, 2.0));
+            //ecs.get_component_mut::<TransformsComponent>(entity)
+            //    .unwrap()
+            //    .set_rotation(Quat::from_rotation_y((count as f32 / 300.0).cos()));
+            //ecs.get_component_mut::<TransformsComponent>(entity)
+            //    .unwrap()
+            //    .set_translation(Vec3::new(0.0, (count / 100.0).cos() as f32 / 2.0, 2.0));
             let gfx = ecs.get_system_mut::<GraphicSystem>().unwrap();
 
             match gfx.feedback() {

@@ -46,7 +46,7 @@ impl Vertex {
 #[derive(Clone)]
 pub struct Mesh {
     pub vertices: Vec<Vertex>,
-    pub indices: Vec<[u16; 3]>,
+    pub indices: Vec<[u32; 3]>,
 }
 
 /// A mesh living on the gpu
@@ -101,7 +101,7 @@ impl Mesh {
     pub fn duplicate_vertices(self) -> Self {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
-        let mut i = 0u16;
+        let mut i = 0u32;
         for tri in self.indices {
             indices.push([i, i + 1, i + 2]);
             vertices.extend_from_slice(&[
@@ -193,7 +193,7 @@ impl Primitives for Mesh {
             v![-L, O, H],
             v![-L, O, -H],
         ];
-        let mut indices: Vec<[u16; 3]> = vec![
+        let mut indices: Vec<[u32; 3]> = vec![
             [0, 1, 2],
             [2, 3, 0],
             [2, 1, 4],
@@ -223,9 +223,9 @@ impl Primitives for Mesh {
                 let p2 = vertices[i2 as usize].position;
                 let p3 = vertices[i3 as usize].position;
                 let (i4, i5, i6) = (
-                    vertices.len() as u16,
-                    vertices.len() as u16 + 1,
-                    vertices.len() as u16 + 2,
+                    vertices.len() as u32,
+                    vertices.len() as u32 + 1,
+                    vertices.len() as u32 + 2,
                 );
                 let p4 = p1.lerp(p2, 0.5).normalize(); // halfway point p1 -> p2
                 let p5 = p2.lerp(p3, 0.5).normalize(); // normalize to keep the vertices on the unit sphere
@@ -285,7 +285,7 @@ impl Primitives for Mesh {
                 let quad = quads.remove(0);
                 // indices of the points in the vertices array
                 let (i1, i2, i3, i4) = (quad[0], quad[1], quad[2], quad[3]);
-                let i5 = vertices.len() as u16;
+                let i5 = vertices.len() as u32;
                 let (i6, i7, i8, i9) = (i5 + 1, i5 + 2, i5 + 3, i5 + 4);
                 let p1 = vertices[i1 as usize].position;
                 let p2 = vertices[i2 as usize].position;
