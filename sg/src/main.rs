@@ -6,7 +6,7 @@
 use glam::{Quat, Vec3, Vec4};
 use systems::graphics::mesh_manager::{Mesh, Primitives};
 use systems::graphics::texture_manager::SingleValue;
-use systems::graphics::{GraphicSystem, Light, PointLight, Material, gltf};
+use systems::graphics::{gltf, GraphicSystem, Light, Material, PointLight};
 use systems::{CenterSystem, GravitySystem, LoggingSystem};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -80,15 +80,14 @@ async fn run(mut ecs: ECS) {
     //}
 
     let pos = [
-        Vec3::new( 1.0,  1.0, -3.0),
-        Vec3::new(-1.0,  1.0, -3.0),
+        Vec3::new(1.0, 1.0, -3.0),
+        Vec3::new(-1.0, 1.0, -3.0),
         Vec3::new(-1.0, -1.0, -3.0),
-        Vec3::new( 1.0, -1.0, -3.0),
-
-        Vec3::new( 1.0, 4.0, -3.0),
+        Vec3::new(1.0, -1.0, -3.0),
+        Vec3::new(1.0, 4.0, -3.0),
         Vec3::new(-1.0, 4.0, -3.0),
         Vec3::new(-1.0, 2.0, -3.0),
-        Vec3::new( 1.0, 2.0, -3.0),
+        Vec3::new(1.0, 2.0, -3.0),
     ];
     let lc = Vec4::splat(27.0);
     for pos in pos {

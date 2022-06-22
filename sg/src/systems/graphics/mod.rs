@@ -12,18 +12,21 @@ use crate::{
 };
 
 use self::{
-    camera::Camera, g_buffer::GBuffer, mesh_manager::{MeshManager, Vertex}, pipeline::Pipeline,
-    texture_manager::{TextureManager, TextureSet, TextureHandle, SingleValue},
+    camera::Camera,
+    g_buffer::GBuffer,
+    mesh_manager::{MeshManager, Vertex},
+    pipeline::Pipeline,
+    texture_manager::{SingleValue, TextureHandle, TextureManager, TextureSet},
 };
 
 #[macro_use] // avoid importing each and every macro
 pub mod desc;
 pub mod camera;
 pub mod g_buffer;
+pub mod gltf;
 pub mod mesh_manager;
 pub mod pipeline;
 pub mod texture_manager;
-pub mod gltf;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -144,9 +147,7 @@ impl Material {
         gfx.texture_manager.add_texture_to_set(metallic, set)?;
         gfx.texture_manager.add_texture_to_set(roughness, set)?;
         gfx.texture_manager.add_texture_to_set(ao, set)?;
-        Ok(Self {
-            textures: set,
-        })
+        Ok(Self { textures: set })
     }
 }
 

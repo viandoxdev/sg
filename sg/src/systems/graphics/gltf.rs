@@ -1,15 +1,19 @@
-use std::{path::Path, num::NonZeroU32};
+use std::{num::NonZeroU32, path::Path};
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use ecs::OwnedEntity;
-use glam::{Quat, Vec3, Vec2};
-use gltf::{mesh::Reader, image::Format};
+use glam::{Quat, Vec2, Vec3};
 use gltf::image::Data as ImageData;
+use gltf::{image::Format, mesh::Reader};
 
-use crate::components::{TransformsComponent, GraphicsComponent};
+use crate::components::{GraphicsComponent, TransformsComponent};
 
 use super::Material;
-use super::{GraphicSystem, mesh_manager::{Vertex, Mesh}, texture_manager::{TextureSet, SingleValue, TextureHandle}};
+use super::{
+    mesh_manager::{Mesh, Vertex},
+    texture_manager::{SingleValue, TextureHandle, TextureSet},
+    GraphicSystem,
+};
 
 struct ChannelIndex {
     red: Option<usize>,
@@ -20,7 +24,12 @@ struct ChannelIndex {
 
 impl Default for ChannelIndex {
     fn default() -> Self {
-        ChannelIndex { red: None, green: None, blue: None, alpha: None }
+        ChannelIndex {
+            red: None,
+            green: None,
+            blue: None,
+            alpha: None,
+        }
     }
 }
 
@@ -36,20 +45,20 @@ trait FormatExt {
 impl FormatExt for Format {
     fn to_wgpu(self, srgb: bool) -> wgpu::TextureFormat {
         match self {
-            Format::R8G8B8   if srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
-            Format::B8G8R8   if srgb => wgpu::TextureFormat::Bgra8UnormSrgb,
+            Format::R8G8B8 if srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+            Format::B8G8R8 if srgb => wgpu::TextureFormat::Bgra8UnormSrgb,
             Format::R8G8B8A8 if srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
             Format::B8G8R8A8 if srgb => wgpu::TextureFormat::Bgra8UnormSrgb,
 
-            Format::R8           => wgpu::TextureFormat::R8Unorm,
-            Format::R16          => wgpu::TextureFormat::R16Unorm,
-            Format::R8G8         => wgpu::TextureFormat::Rg8Unorm,
-            Format::R16G16       => wgpu::TextureFormat::Rg16Unorm,
-            Format::R8G8B8       => wgpu::TextureFormat::Rgba8Unorm,
-            Format::B8G8R8       => wgpu::TextureFormat::Bgra8Unorm,
-            Format::R8G8B8A8     => wgpu::TextureFormat::Rgba8Unorm,
-            Format::B8G8R8A8     => wgpu::TextureFormat::Bgra8Unorm,
-            Format::R16G16B16    => wgpu::TextureFormat::Rgba16Unorm,
+            Format::R8 => wgpu::TextureFormat::R8Unorm,
+            Format::R16 => wgpu::TextureFormat::R16Unorm,
+            Format::R8G8 => wgpu::TextureFormat::Rg8Unorm,
+            Format::R16G16 => wgpu::TextureFormat::Rg16Unorm,
+            Format::R8G8B8 => wgpu::TextureFormat::Rgba8Unorm,
+            Format::B8G8R8 => wgpu::TextureFormat::Bgra8Unorm,
+            Format::R8G8B8A8 => wgpu::TextureFormat::Rgba8Unorm,
+            Format::B8G8R8A8 => wgpu::TextureFormat::Bgra8Unorm,
+            Format::R16G16B16 => wgpu::TextureFormat::Rgba16Unorm,
             Format::R16G16B16A16 => wgpu::TextureFormat::Rgba16Unorm,
         }
     }
@@ -57,13 +66,9 @@ impl FormatExt for Format {
     fn bytes_per_pixel_unaligned(self) -> usize {
         match self {
             Format::R8 => 1,
-            Format::R16
-                | Format::R8G8 => 2,
-            Format::R8G8B8
-                | Format::B8G8R8 => 3,
-            Format::R16G16
-                | Format::R8G8B8A8
-                | Format::B8G8R8A8 => 4,
+            Format::R16 | Format::R8G8 => 2,
+            Format::R8G8B8 | Format::B8G8R8 => 3,
+            Format::R16G16 | Format::R8G8B8A8 | Format::B8G8R8A8 => 4,
             Format::R16G16B16 => 6,
             Format::R16G16B16A16 => 8,
         }
@@ -73,22 +78,20 @@ impl FormatExt for Format {
         match self.bytes_per_pixel_unaligned() {
             3 => 4,
             6 => 8,
-            v => v
+            v => v,
         }
     }
 
     fn count_channels(self) -> usize {
         match self {
-            Format::R8
-                | Format::R16 => 1,
-            Format::R8G8
-                | Format::R16G16 => 2,
+            Format::R8 | Format::R16 => 1,
+            Format::R8G8 | Format::R16G16 => 2,
             Format::R8G8B8
-                | Format::B8G8R8
-                | Format::R8G8B8A8
-                | Format::B8G8R8A8
-                | Format::R16G16B16
-                | Format::R16G16B16A16 => 4,
+            | Format::B8G8R8
+            | Format::R8G8B8A8
+            | Format::B8G8R8A8
+            | Format::R16G16B16
+            | Format::R16G16B16A16 => 4,
         }
     }
 
@@ -99,16 +102,33 @@ impl FormatExt for Format {
     fn channel_index(self) -> ChannelIndex {
         macro_rules! ci {
             ($r:expr) => {
-                ChannelIndex { red: Some($r), ..Default::default() }
+                ChannelIndex {
+                    red: Some($r),
+                    ..Default::default()
+                }
             };
             ($r:expr, $g:expr) => {
-                ChannelIndex { red: Some($r), green: Some($g), ..Default::default() }
+                ChannelIndex {
+                    red: Some($r),
+                    green: Some($g),
+                    ..Default::default()
+                }
             };
             ($r:expr, $g:expr, $b:expr) => {
-                ChannelIndex { red: Some($r), green: Some($g), blue: Some($b), ..Default::default() }
+                ChannelIndex {
+                    red: Some($r),
+                    green: Some($g),
+                    blue: Some($b),
+                    ..Default::default()
+                }
             };
             ($r:expr, $g:expr, $b:expr, $a:expr) => {
-                ChannelIndex { red: Some($r), green: Some($g), blue: Some($b), alpha: Some($a) }
+                ChannelIndex {
+                    red: Some($r),
+                    green: Some($g),
+                    blue: Some($b),
+                    alpha: Some($a),
+                }
             };
         }
         match self {
@@ -155,7 +175,7 @@ fn load_image(gfx: &mut GraphicSystem, image: &mut ImageData, srgb: bool) -> wgp
                 data.insert(i * 8 + 6, 255);
             }
         }
-        _ => {},
+        _ => {}
     }
     let bytes_per_row = Some(NonZeroU32::new(bytes_per_pixel as u32 * image.width).unwrap());
 
@@ -204,9 +224,7 @@ pub fn open<P: AsRef<Path>>(path: P, gfx: &mut GraphicSystem) -> Result<Vec<Owne
             let mut positions = reader
                 .read_positions()
                 .context("Couldn't read vertex positions")?;
-            let mut normals = reader
-                .read_normals()
-                .context("Couldn't read normals")?;
+            let mut normals = reader.read_normals().context("Couldn't read normals")?;
             let mut tex_coords = reader
                 .read_tex_coords(0)
                 .context("Couldn't read texture coordinates")?
@@ -220,16 +238,24 @@ pub fn open<P: AsRef<Path>>(path: P, gfx: &mut GraphicSystem) -> Result<Vec<Owne
             let mut m_vertices = Vec::new();
             while let Some(i1) = indices.next() {
                 let (i2, i3) = (
-                    indices.next().context("Indices count isn't a multiple of 3")?,
-                    indices.next().context("Indices count isn't a multiple of 3")?,
+                    indices
+                        .next()
+                        .context("Indices count isn't a multiple of 3")?,
+                    indices
+                        .next()
+                        .context("Indices count isn't a multiple of 3")?,
                 );
                 m_indices.push([i1, i3, i2]); // swap to invert winding
             }
-            
+
             while let Some(position) = positions.next() {
                 let position = Vec3::from(position);
                 let normal = Vec3::from(normals.next().context("No normal given for vertex")?);
-                let tex_coords = Vec2::from(tex_coords.next().context("No texture coordinate given for vertex")?);
+                let tex_coords = Vec2::from(
+                    tex_coords
+                        .next()
+                        .context("No texture coordinate given for vertex")?,
+                );
                 let tangent = Vec3::ONE;
 
                 m_vertices.push(Vertex {
@@ -260,7 +286,7 @@ pub fn open<P: AsRef<Path>>(path: P, gfx: &mut GraphicSystem) -> Result<Vec<Owne
 
             let view = load_image(gfx, &mut doc_images[index], srgb);
             let handle = gfx.texture_manager.add_texture(view);
-            images[index] = vec!(handle);
+            images[index] = vec![handle];
             handle
         };
 
@@ -268,13 +294,13 @@ pub fn open<P: AsRef<Path>>(path: P, gfx: &mut GraphicSystem) -> Result<Vec<Owne
         let albedo = pbrmr
             .base_color_texture()
             .map(|tex| load(gfx, tex.texture(), true))
-            .unwrap_or_else(||
+            .unwrap_or_else(|| {
                 gfx.texture_manager.get_or_add_single_value_texture(
                     &gfx.device,
                     &gfx.queue,
-                    SingleValue::Color(pbrmr.base_color_factor().into())
+                    SingleValue::Color(pbrmr.base_color_factor().into()),
                 )
-            );
+            });
         let normal_map = material
             .normal_texture()
             .map(|tex| load(gfx, tex.texture(), false));
@@ -300,7 +326,7 @@ pub fn open<P: AsRef<Path>>(path: P, gfx: &mut GraphicSystem) -> Result<Vec<Owne
                 let format = match bpc {
                     1 => Format::R8,
                     2 => Format::R16,
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 };
                 let mut img_met = ImageData {
                     format,
@@ -332,16 +358,19 @@ pub fn open<P: AsRef<Path>>(path: P, gfx: &mut GraphicSystem) -> Result<Vec<Owne
             metallic = gfx.texture_manager.get_or_add_single_value_texture(
                 &gfx.device,
                 &gfx.queue,
-                SingleValue::Factor(pbrmr.metallic_factor())
+                SingleValue::Factor(pbrmr.metallic_factor()),
             );
             roughness = gfx.texture_manager.get_or_add_single_value_texture(
                 &gfx.device,
                 &gfx.queue,
-                SingleValue::Factor(pbrmr.roughness_factor())
+                SingleValue::Factor(pbrmr.roughness_factor()),
             );
         }
         let index = material.index().unwrap_or(default_material_index);
-        materials[index].replace(Material::new(albedo, normal_map, metallic, roughness, ao, gfx).context("Error on material creation")?);
+        materials[index].replace(
+            Material::new(albedo, normal_map, metallic, roughness, ao, gfx)
+                .context("Error on material creation")?,
+        );
     }
 
     for scene in doc.scenes() {
@@ -354,13 +383,13 @@ pub fn open<P: AsRef<Path>>(path: P, gfx: &mut GraphicSystem) -> Result<Vec<Owne
             tsm.set_scale(Vec3::from(scale));
             if let Some(mesh) = node.mesh() {
                 for (index, primitive) in mesh.primitives().enumerate() {
-                    let material_index = primitive.material().index().unwrap_or(default_material_index);
+                    let material_index = primitive
+                        .material()
+                        .index()
+                        .unwrap_or(default_material_index);
                     let material = materials[material_index].context("No such material")?;
                     let mesh = mesh_handles[mesh.index()][index];
-                    let gfc = GraphicsComponent {
-                        material,
-                        mesh,
-                    };
+                    let gfc = GraphicsComponent { material, mesh };
 
                     let mut entity = OwnedEntity::new();
                     entity.add(gfc);
