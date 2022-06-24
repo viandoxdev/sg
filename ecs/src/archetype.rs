@@ -2,12 +2,15 @@ use std::{
     alloc::{self, Layout},
     any::{Any, TypeId},
     collections::HashMap,
+    marker::PhantomData,
     mem::MaybeUninit,
     ops::{Bound, RangeBounds},
     ptr::{DynMetadata, NonNull},
 };
 
 use ecs_macros::impl_archetype;
+
+use crate::query::Query;
 
 type DropInPlace = fn(*mut ());
 
@@ -51,11 +54,11 @@ impl Archetype {
             }
         }
     }
-    fn is_zst(&self) -> bool {
+    pub fn is_zst(&self) -> bool {
         self.layout.size() == 0
     }
     /// Test if two archetypes match (order independant)
-    fn match_archetype(&self, other: &Archetype) -> bool {
+    pub fn match_archetype(&self, other: &Archetype) -> bool {
         if self.info.len() == other.info.len() {
             for id in self.info.keys() {
                 if !other.info.contains_key(id) {
@@ -68,7 +71,7 @@ impl Archetype {
         }
     }
     /// Test if two archetypes exactly match (same memory layout)
-    fn exact_match(&self, other: &Archetype) -> bool {
+    pub fn exact_match(&self, other: &Archetype) -> bool {
         if self.layout != other.layout {
             return false;
         }
@@ -87,6 +90,12 @@ impl Archetype {
         } else {
             false
         }
+    }
+    pub fn offset<T: 'static>(&self) -> usize {
+        self.info[&TypeId::of::<T>()].offset
+    }
+    pub fn has<T: 'static>(&self) -> bool {
+        self.info.contains_key(&TypeId::of::<T>())
     }
 }
 
@@ -134,7 +143,9 @@ impl ArchetypeStorage {
         let iter = values.into_iter();
         let hint = iter.size_hint().1;
         if let Some(len) = hint {
-            self.grow(self.capacity + len);
+            if self.capacity < self.length + len {
+                self.grow(self.capacity + len);
+            }
         }
         for value in iter {
             self.push(value);
@@ -199,6 +210,20 @@ impl ArchetypeStorage {
         }
         unsafe { std::slice::from_raw_parts(self.data.as_ptr() as *const T, self.length) }
     }
+    /// Create an QueryIter of this storage, this doesn't have any memory safety checks and will
+    /// break if used after drop of this storage, or if used concurently.
+    pub unsafe fn iter_query<Q: Query>(&self) -> QueryIter<Q> {
+        QueryIter {
+            data: self.data,
+            length: self.length,
+            archetype: &self.archetype as *const Archetype,
+            current: 0,
+            _phantom: PhantomData,
+        }
+    }
+    pub fn archetype(&self) -> &Archetype {
+        &self.archetype
+    }
     /// Grow the storage to hold at least new_cap elements
     /// This should (and will) never be called if entity_size is 0.
     fn grow(&mut self, new_cap: usize) {
@@ -237,20 +262,51 @@ impl Drop for ArchetypeStorage {
     fn drop(&mut self) {
         self.clear(..);
         // dealloc memory
-        if self.capacity > 0 {
-            unsafe {
-                let layout = self.archetype.layout.repeat(self.capacity).unwrap().0;
-                alloc::dealloc(self.data.as_ptr(), layout);
-            }
+        if self.capacity > 0 && !self.archetype.is_zst() {
+            //unsafe {
+            //    let layout = self.archetype.layout.repeat(self.capacity).unwrap().0;
+            //    alloc::dealloc(self.data.as_ptr(), layout);
+            //}
+        }
+    }
+}
+
+/// An iterator that runs a query on a store
+///
+/// # safety
+///
+/// This isn't memory safe, this Iterator doesn't borrow the storage at all, and will lead to data
+/// races and other fun stuff, it is necessary to manually enforce aliasing rules when using this.
+pub struct QueryIter<T: Query> {
+    data: NonNull<u8>,
+    length: usize,
+    archetype: *const Archetype,
+    current: usize,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Query> Iterator for QueryIter<T> {
+    type Item = T;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current == self.length {
+            None
+        } else {
+            let ptr = unsafe {
+                self.data
+                    .as_ptr()
+                    .add((*self.archetype).layout.size() * self.current)
+            };
+            self.current += 1;
+            Some(T::build(ptr, unsafe { &*(self.archetype) }))
         }
     }
 }
 
 // Where the cursed shit happens
-/// Take a fat reference, extract its metadata and get the drop_in_place function pointer from it
-unsafe fn get_drop(fat: &dyn Any) -> DropInPlace {
-    // Get raw fat pointer
-    let fat = fat as *const dyn Any;
+/// Get the drop_in_place implementation for any type T
+unsafe fn get_drop<T: 'static>() -> DropInPlace {
+    // Get a raw fat dyn trait pointer
+    let fat = std::ptr::null::<T>() as *const dyn Any;
     // get the metadata
     let (_, metadata): (_, DynMetadata<dyn Any>) = fat.to_raw_parts();
     // SAFETY: This is not safe, this only works because the DynMetadata struct has only
@@ -260,7 +316,7 @@ unsafe fn get_drop(fat: &dyn Any) -> DropInPlace {
     // The VTable struct is repr(C), so reinterpreting this pointer as a pointer to its
     // first field (the fn pointer for drop_in_place) IS valid.
     let drop_ptr: *const fn(*mut ()) = std::mem::transmute(metadata);
-    // unsafe, dereference the pointer to the fn pointer
+    // dereference the pointer to the fn pointer
     *drop_ptr
 }
 
@@ -274,37 +330,41 @@ pub trait IntoArchetype {
     unsafe fn write(self, dst: *mut u8, archetype: &Archetype);
     /// Read a value from src,, archetypes must match (order independant)
     unsafe fn read(src: *const u8, archetype: &Archetype) -> Self;
+    /// Get a vec of the TypeIds of the types composing the archetype
+    fn types() -> Vec<TypeId>;
 }
 
+// Implement IntoArchetype for generic tuples of length 0 to 16
+// see ecs_macros for implementation
 impl_archetype!(16);
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU8;
+
     use super::*;
+
     #[test]
-    fn drop() {
+    fn cursed_drop() {
         type D = i32;
-        let drop;
-        unsafe {
-            let fat = &*MaybeUninit::<D>::uninit().as_ptr();
-            drop = get_drop(fat);
-        }
-        let mut v = 32;
+        let drop = unsafe { get_drop::<D>() };
+        let mut v: D = 32;
         let ptr = &mut v as *mut D as *mut ();
         drop(ptr);
         std::mem::forget(v);
     }
+
     #[test]
     fn init() {
         let _at = ArchetypeStorage::new::<(i16, u64)>();
     }
+
     #[test]
     fn push_remove() {
         let mut at = ArchetypeStorage::new::<(String, u16, bool)>();
         at.push((true, "Test".to_owned(), 12u16)); // 0 -> 0
         at.push(("Another".to_owned(), false, 14u16)); // 1 -> X
         at.push((false, 57u16, "thing".to_owned())); // 2 -> 1
-        println!("{:?}", at.as_slice::<(String, u16, bool)>());
         at.remove(1);
         let v = at.take::<(u16, bool, String)>(1);
         assert_eq!(v.0, 57);
@@ -312,6 +372,7 @@ mod tests {
         assert_eq!(v.2, "thing");
         at.clear(..);
     }
+
     #[test]
     fn push_and_take() {
         let mut at = ArchetypeStorage::new::<(u16, u64)>();
@@ -320,6 +381,7 @@ mod tests {
         assert_eq!(val.0, 12);
         assert_eq!(val.1, 32);
     }
+
     #[test]
     fn clear() {
         let mut at = ArchetypeStorage::new::<(u16, u64)>();
@@ -329,5 +391,98 @@ mod tests {
         println!("pre clear: {:?}", at.as_slice::<(u16, u64)>());
         at.clear(..);
         println!("post clear: {:?}", at.as_slice::<(u16, u64)>());
+    }
+
+    #[test]
+    fn half_zst() {
+        #[derive(Debug, PartialEq, Eq)]
+        struct Tag {}
+
+        static DROPPED: AtomicU8 = AtomicU8::new(0);
+
+        impl Drop for Tag {
+            fn drop(&mut self) {
+                DROPPED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        let mut at = ArchetypeStorage::new::<(Tag, u8)>();
+        at.push((Tag {}, 16u8));
+        at.push((65u8, Tag {}));
+        at.extend(vec![(Tag {}, 0u8), (Tag {}, 5u8)]);
+        assert_eq!(at.len(), 4);
+        let val = at.take::<(u8, Tag)>(2);
+        assert_eq!(val.0, 0);
+        assert_eq!(val.1, Tag {});
+        assert_eq!(at.len(), 3);
+        at.clear(1..(at.len() - 1));
+        assert_eq!(at.len(), 2);
+        at.remove(0);
+        assert_eq!(DROPPED.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn zst() {
+        #[derive(Debug, PartialEq, Eq)]
+        struct Tag {}
+
+        static DROPPED: AtomicU8 = AtomicU8::new(0);
+
+        impl Drop for Tag {
+            fn drop(&mut self) {
+                DROPPED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        let mut at = ArchetypeStorage::new::<(Tag, ())>();
+        at.push((Tag {}, ()));
+        at.push(((), Tag {}));
+        let v = vec![(Tag {}, ()), (Tag {}, ())];
+        at.extend(v);
+        assert_eq!(at.len(), 4);
+        let val = at.take::<(Tag, ())>(2);
+        assert_eq!(val.0, Tag {});
+        assert_eq!(val.1, ());
+        assert_eq!(at.len(), 3);
+        at.clear(1..(at.len() - 1));
+        assert_eq!(at.len(), 2);
+        at.remove(0);
+        assert_eq!(DROPPED.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+    #[test]
+    fn query() {
+        macro_rules! eq {
+            ($a:expr, $b:expr) => {{
+                let a = $a;
+                let b = $b;
+                assert_eq!(a.is_some(), b.is_some());
+                if let Some(a) = a {
+                    let b = b.unwrap();
+                    assert_eq!(a.0, b.0);
+                    assert_eq!(a.1, *b.1);
+                    assert_eq!(a.2, b.2.copied());
+                    assert_eq!(a.3, b.3);
+                }
+            }};
+        }
+        let mut at = ArchetypeStorage::new::<(String, u8, (), i32, bool)>();
+        at.push((12u8, 34i32, "str".to_owned(), (), false));
+        at.push((25i32, "abc".to_owned(), (), 17u8, true));
+        at.push(("bob".to_owned(), (), 99u8, 68i32, false));
+        let mut iter = unsafe { at.iter_query::<(&String, &i32, Option<&bool>, Option<&u128>)>() };
+
+        eq!(Some(("str", 34i32, Some(false), None)), iter.next());
+        eq!(Some(("abc", 25i32, Some(true), None)), iter.next());
+        eq!(Some(("bob", 68i32, Some(false), None)), iter.next());
+        assert_eq!(None, iter.next());
+
+        let iter = unsafe { at.iter_query::<&mut i32>() };
+        for i in iter {
+            *i = 69;
+        }
+        let s = at.as_slice::<(String, u8, (), i32, bool)>();
+        assert_eq!(s[0].3, 69);
+        assert_eq!(s[1].3, 69);
+        assert_eq!(s[2].3, 69);
     }
 }

@@ -51,13 +51,8 @@ fn n_to_type(mut n: u64, total: u64) -> Ident {
 #[proc_macro]
 pub fn impl_archetype(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let count = parse_macro_input!(input as Count).count;
-    if count == 0 {
-        return syn::Error::new(Span::call_site(), "count must be 1 or more")
-            .to_compile_error()
-            .into();
-    }
     let output = {
-        let impls = (1..count).map(|count| {
+        let impls = (0..=count).map(|count| {
             // eg "2"
             let cap = count as usize;
             // eg "A", "B"
@@ -65,50 +60,58 @@ pub fn impl_archetype(input: proc_macro::TokenStream) -> proc_macro::TokenStream
             // eg "0", "1"
             let indices = (0..count).map(|v| Index::from(v as usize));
             // eg "(A, B,)"
-            let tuple = {
+            let tuple = if count > 0{
                 let types = types.clone();
                 quote!((#(#types),*,))
+            } else {
+                quote!(())
             };
             // eg "A: 'static, B: 'static"
-            let generics = {
+            let generics = if count > 0 {
                 let types = types.clone();
-                quote!(#(#types: 'static),*)
+                quote!(<#(#types: 'static),*>)
+            } else {
+                quote!()
             };
-            // eg "&& archetype.info.contains_key(&TypeId::of::<A>)"
             let matches = {
                 let types = types.clone();
-                quote!(#(&& archetype.info.contains_key(&TypeId::of::<#types>()))*)
+                quote!(#(&& archetype.has::<#types>())*)
             };
             let writes = {
                 let types = types.clone();
                 let indices = indices.clone();
                 quote!{#(
-                    std::ptr::write(dst.add(archetype.info[&TypeId::of::<#types>()].offset) as *mut #types, self.#indices);
+                    std::ptr::write(dst.add(archetype.offset::<#types>()) as *mut #types, self.#indices);
                 )*}
             };
             let reads = {
                 let types = types.clone();
                 let indices = indices.clone();
                 quote!{#(
-                    value.#indices = std::ptr::read(src.add(archetype.info[&TypeId::of::<#types>()].offset) as *const #types);
+                    std::ptr::copy(src.add(archetype.offset::<#types>()) as *const #types, &mut value.#indices as *mut #types, 1);
                 )*}
             };
+            let typeids = {
+                let types = types.clone();
+                quote!{#(
+                    TypeId::of::<#types>()
+                ),*}
+            };
             quote!{
-                impl<#generics> IntoArchetype for #tuple {
+                impl #generics IntoArchetype for #tuple {
                     fn into_archetype() -> Archetype {
                         let layout = Layout::new::<#tuple>();
                         let mut info = HashMap::with_capacity(#cap);
 
                         unsafe {
                             let ptr = std::ptr::null::<#tuple>();
-
                             #(
                                 info.insert(TypeId::of::<#types>(), ComponentType {
                                     // ptr is a null pointer, so the offset from any pointer p from
-                                    // it is the pointer p's value
+                                    // it is the pointer p's value (-> as usize gives offset)
                                     offset: (&(*ptr).#indices as *const #types) as usize,
                                     drop: match std::mem::needs_drop::<#types>() {
-                                        true => Some(get_drop(&*std::ptr::null::<#types>())),
+                                        true => Some(get_drop::<#types>()),
                                         false => None,
                                     },
                                     size: std::mem::size_of::<#types>(),
@@ -146,6 +149,65 @@ pub fn impl_archetype(input: proc_macro::TokenStream) -> proc_macro::TokenStream
                         let mut value: Self = MaybeUninit::uninit().assume_init();
                         #reads
                         value
+                    }
+                    fn types() -> Vec<TypeId> {
+                        vec![
+                            #typeids
+                        ]
+                    }
+                }
+            }
+        });
+        quote! {
+            #(#impls)*
+        }
+    };
+    output.into()
+}
+
+#[proc_macro]
+pub fn impl_query(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let count = parse_macro_input!(input as Count).count;
+    let output = {
+        let impls = (1..=count).map(|count| {
+            // eg "A", "B"
+            let types = (0..count).map(|v| n_to_type(v, count));
+            // eg "(A, B,)"
+            let tuple = {
+                let types = types.clone();
+                quote!((#(#types),*,))
+            };
+            // eg "A: 'static, B: 'static"
+            let generics = {
+                let types = types.clone();
+                quote!(<#(#types: Query),*>)
+            };
+            let matches = {
+                let types = types.clone();
+                quote!(#(&& #types::match_archetype(archetype))*)
+            };
+            let sets = (0..count).map(|v| Ident::new(&format!("set_{v}"), Span::call_site()));
+            let lets = {
+                let types = types.clone();
+                let sets = sets.clone();
+                quote!(#(let #sets = #types::bitset(builder);)*)
+            };
+            quote! {
+                impl #generics Query for #tuple {
+                    fn match_archetype(archetype: &Archetype) -> bool {
+                        true #matches
+                    }
+                    fn build(ptr: *mut u8, archetype: &Archetype) -> Self {
+                        (
+                            #(#types::build(ptr, archetype)),*,
+                        )
+                    }
+                    fn bitset(builder: &mut BitsetBuilder) -> BorrowBitset {
+                        #lets
+                        builder
+                            .start_borrow()
+                            #(.with(#sets))*
+                            .build_borrow()
                     }
                 }
             }

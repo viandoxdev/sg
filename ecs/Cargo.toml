@@ -9,3 +9,4 @@ edition = "2021"
 uuid = {version = "1.0.0", features = ["v4", "fast-rng"]}
 log = "0.4.16"
 ecs_macros = { path = "../ecs_macros" }
+parking_lot = "0.12.1"
