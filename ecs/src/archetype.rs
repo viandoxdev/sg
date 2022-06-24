@@ -2,7 +2,6 @@ use std::{
     alloc::{self, Layout},
     any::{Any, TypeId},
     collections::HashMap,
-    marker::PhantomData,
     mem::MaybeUninit,
     ops::{Bound, RangeBounds},
     ptr::{DynMetadata, NonNull},
@@ -10,11 +9,14 @@ use std::{
 
 use ecs_macros::impl_archetype;
 
-use crate::query::Query;
+use crate::{
+    bitset::{ArchetypeBitset, BitsetBuilder},
+    query::{Query, QueryIter},
+};
 
 type DropInPlace = fn(*mut ());
 
-// Most of the code here is *heavily* inspired by the implementing Vec chapter of the Rustinomicon
+// Most of the code here is *heavily* inspired by the implementing Vec chapter of the Rustonomicon
 // https://doc.rust-lang.org/nomicon/vec/vec.html
 
 /// The storage for an archetype
@@ -25,7 +27,7 @@ pub struct ArchetypeStorage {
     archetype: Archetype,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone)]
 pub struct ComponentType {
     /// The offset from the begining of the entity
     offset: usize,
@@ -33,8 +35,11 @@ pub struct ComponentType {
     drop: Option<DropInPlace>,
     /// The size of an instance of the component
     size: usize,
+    /// The min alignment of the component
+    alignment: usize,
 }
 
+#[derive(Clone)]
 pub struct Archetype {
     /// Info about each type
     info: HashMap<TypeId, ComponentType>,
@@ -57,18 +62,10 @@ impl Archetype {
     pub fn is_zst(&self) -> bool {
         self.layout.size() == 0
     }
-    /// Test if two archetypes match (order independant)
+    /// Test if two archetypes match, does't care about order, but ensure both archetypes contain
+    /// the same number of types
     pub fn match_archetype(&self, other: &Archetype) -> bool {
-        if self.info.len() == other.info.len() {
-            for id in self.info.keys() {
-                if !other.info.contains_key(id) {
-                    return false;
-                }
-            }
-            true
-        } else {
-            false
-        }
+        self.info.len() == other.info.len() && self.lose_match(other)
     }
     /// Test if two archetypes exactly match (same memory layout)
     pub fn exact_match(&self, other: &Archetype) -> bool {
@@ -91,17 +88,80 @@ impl Archetype {
             false
         }
     }
+    /// Test if self 'fits' into other, doesn't care about order or extra types which might be
+    /// there
+    pub fn lose_match(&self, other: &Archetype) -> bool {
+        for id in self.info.keys() {
+            if !other.info.contains_key(id) {
+                return false;
+            }
+        }
+        true
+    }
+    /// Get the offset of the value of a type in the memory layout of this archetype
     pub fn offset<T: 'static>(&self) -> usize {
         self.info[&TypeId::of::<T>()].offset
     }
+    /// Check if the archetype contains a type
     pub fn has<T: 'static>(&self) -> bool {
         self.info.contains_key(&TypeId::of::<T>())
+    }
+    /// Copy the components from a location with this archetype to another location following
+    /// another archetype.
+    /// # safety
+    /// Components not included in the other archetype are *not* dropped.
+    pub unsafe fn try_write(&self, src: *const u8, dst: *mut u8, archetype: &Archetype) {
+        for (id, src_c) in &self.info {
+            let dst_c = match archetype.info.get(id) {
+                Some(v) => v,
+                None => continue,
+            };
+            let src = src.add(src_c.offset);
+            let dst = dst.add(dst_c.offset);
+            std::ptr::copy(src, dst, src_c.size);
+        }
+    }
+    /// Merge the archetypes to create a new one. Note that this can create an archetype with a non
+    /// repr(rust) memory layout, that can't be reinterpreted as a rust tuple.
+    pub fn merge(&mut self, other: Archetype) {
+        let (layout, offset) = self
+            .layout
+            .extend(other.layout)
+            .expect("Archetype overflow");
+        for (id, mut info) in other.info {
+            info.offset += offset;
+            self.info.insert(id, info);
+        }
+        self.layout = layout;
+    }
+    /// Remove the components of other from self. Note that this will recompute the memory layout
+    /// of the archetype and will not be interpretable as a valid rust tuple anymore (if it was).
+    pub fn subtract(&mut self, other: Archetype) {
+        for id in other.info.keys() {
+            self.info.remove(id);
+        }
+        // recompute memory layout
+        self.layout = Layout::from_size_align(0, 1).unwrap();
+        for info in self.info.values_mut() {
+            let field = Layout::from_size_align(info.size, info.alignment).unwrap();
+            let (new_layout, offset) = self.layout.extend(field).unwrap();
+            info.offset = offset;
+            self.layout = new_layout;
+        }
+        self.layout = self.layout.pad_to_align();
+    }
+    /// returns the size of an element of the archetype
+    pub fn size(&self) -> usize {
+        self.layout.size()
     }
 }
 
 impl ArchetypeStorage {
+    #[inline]
     pub fn new<T: IntoArchetype>() -> Self {
-        let archetype = T::into_archetype();
+        Self::new_from_archetype(T::into_archetype())
+    }
+    pub fn new_from_archetype(archetype: Archetype) -> Self {
         // If size is 0, no allocation is needed, so we set capacity to the max:
         // The allocated bytes (none) is enough to hold an infinity of elements
         let capacity = if archetype.is_zst() { !0 } else { 0 };
@@ -113,14 +173,22 @@ impl ArchetypeStorage {
         }
     }
     #[inline(always)]
+    unsafe fn get_ptr_mut_unchecked(&mut self, index: usize) -> *mut u8 {
+        self.data.as_ptr().add(self.archetype.layout.size() * index)
+    }
+    #[inline(always)]
+    unsafe fn get_ptr_unchecked(&self, index: usize) -> *const u8 {
+        self.data.as_ptr().add(self.archetype.layout.size() * index)
+    }
+    #[inline(always)]
     fn get_ptr_mut(&mut self, index: usize) -> *mut u8 {
         assert!(self.length > index);
-        unsafe { self.data.as_ptr().add(self.archetype.layout.size() * index) }
+        unsafe { self.get_ptr_mut_unchecked(index) }
     }
     #[inline(always)]
     fn get_ptr(&self, index: usize) -> *const u8 {
         assert!(self.length > index);
-        unsafe { self.data.as_ptr().add(self.archetype.layout.size() * index) }
+        unsafe { self.get_ptr_unchecked(index) }
     }
     /// Push an entity, T must match the type
     pub fn push<T: IntoArchetype>(&mut self, value: T) {
@@ -129,10 +197,7 @@ impl ArchetypeStorage {
         }
 
         unsafe {
-            let slot = self
-                .data
-                .as_ptr()
-                .add(self.archetype.layout.size() * self.length);
+            let slot = self.get_ptr_mut_unchecked(self.length);
             value.write(slot, &self.archetype);
         }
 
@@ -193,6 +258,36 @@ impl ArchetypeStorage {
             self.fill_gap(start, end - start);
         }
     }
+    /// Move an entity from this storage to another
+    /// # safety
+    /// Components included in this archetype, but not in the destination are forgotten
+    /// Components not included in this archetype but included in the destination are uninitialized
+    /// This method should only be used when accounting for both case
+    /// Returns the new index
+    pub unsafe fn move_entity(&mut self, index: usize, other: &mut ArchetypeStorage) -> usize {
+        let new_index = other.length;
+        if other.capacity == other.length {
+            other.grow(other.capacity + 1);
+        }
+        self.archetype.try_write(
+            self.get_ptr(index),
+            other.get_ptr_mut_unchecked(new_index),
+            &other.archetype,
+        );
+        other.length += 1;
+        self.fill_gap(index, 1);
+        new_index
+    }
+    /// Write components to an index, this doesn't drop the previous value, and should only be
+    /// called to write to uninitialized components
+    pub unsafe fn write<T: IntoArchetype>(&mut self, index: usize, value: T) {
+        value.write(self.get_ptr_mut(index), &self.archetype);
+    }
+    /// Read components of an entity, this copies the bytes and is unsafe for non Copy components,
+    /// this should only be used to copy components that will be forgotten
+    pub unsafe fn read<T: IntoArchetype>(&mut self, index: usize) -> T {
+        T::read(self.get_ptr(index), &self.archetype)
+    }
     /// Take an entity and return it, the archetype needs to matche the storage's
     pub fn take<T: IntoArchetype>(&mut self, index: usize) -> T {
         let ptr = self.get_ptr_mut(index);
@@ -213,14 +308,9 @@ impl ArchetypeStorage {
     /// Create an QueryIter of this storage, this doesn't have any memory safety checks and will
     /// break if used after drop of this storage, or if used concurently.
     pub unsafe fn iter_query<Q: Query>(&self) -> QueryIter<Q> {
-        QueryIter {
-            data: self.data,
-            length: self.length,
-            archetype: &self.archetype as *const Archetype,
-            current: 0,
-            _phantom: PhantomData,
-        }
+        QueryIter::new(self.data, self.length, &self.archetype as *const Archetype)
     }
+    /// Get the archetype of this storage
     pub fn archetype(&self) -> &Archetype {
         &self.archetype
     }
@@ -271,37 +361,6 @@ impl Drop for ArchetypeStorage {
     }
 }
 
-/// An iterator that runs a query on a store
-///
-/// # safety
-///
-/// This isn't memory safe, this Iterator doesn't borrow the storage at all, and will lead to data
-/// races and other fun stuff, it is necessary to manually enforce aliasing rules when using this.
-pub struct QueryIter<T: Query> {
-    data: NonNull<u8>,
-    length: usize,
-    archetype: *const Archetype,
-    current: usize,
-    _phantom: PhantomData<T>,
-}
-
-impl<T: Query> Iterator for QueryIter<T> {
-    type Item = T;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.current == self.length {
-            None
-        } else {
-            let ptr = unsafe {
-                self.data
-                    .as_ptr()
-                    .add((*self.archetype).layout.size() * self.current)
-            };
-            self.current += 1;
-            Some(T::build(ptr, unsafe { &*(self.archetype) }))
-        }
-    }
-}
-
 // Where the cursed shit happens
 /// Get the drop_in_place implementation for any type T
 unsafe fn get_drop<T: 'static>() -> DropInPlace {
@@ -326,6 +385,9 @@ pub trait IntoArchetype {
     /// Check if the archetypes match, this is faster than calling into_archetype and matching over
     /// them.
     fn match_archetype(archetype: &Archetype) -> bool;
+    /// Check if an archetype contains at least all the types of this archetype.
+    fn archetype_contains(archetype: &Archetype) -> bool;
+    fn bitset(builder: &mut BitsetBuilder) -> Option<ArchetypeBitset>;
     /// Write self to dst, archetypes must match (order independant)
     unsafe fn write(self, dst: *mut u8, archetype: &Archetype);
     /// Read a value from src,, archetypes must match (order independant)

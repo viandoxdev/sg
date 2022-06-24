@@ -97,6 +97,10 @@ pub fn impl_archetype(input: proc_macro::TokenStream) -> proc_macro::TokenStream
                     TypeId::of::<#types>()
                 ),*}
             };
+            let adds = {
+                let types = types.clone();
+                quote!(#(.add::<#types>())*)
+            };
             quote!{
                 impl #generics IntoArchetype for #tuple {
                     fn into_archetype() -> Archetype {
@@ -115,7 +119,7 @@ pub fn impl_archetype(input: proc_macro::TokenStream) -> proc_macro::TokenStream
                                         false => None,
                                     },
                                     size: std::mem::size_of::<#types>(),
-
+                                    alignment: std::mem::align_of::<#types>(),
                                 });
                             )*
                         }
@@ -127,14 +131,22 @@ pub fn impl_archetype(input: proc_macro::TokenStream) -> proc_macro::TokenStream
                     }
                     fn match_archetype(archetype: &Archetype) -> bool {
                         if archetype.info.len() == #cap {
-                            true #matches
+                            Self::archetype_contains(archetype)
                         } else {
                             false
                         }
                     }
+                    fn archetype_contains(archetype: &Archetype) -> bool {
+                        true #matches
+                    }
+                    fn bitset(builder: &mut BitsetBuilder) -> Option<ArchetypeBitset> {
+                        builder.start_archetype()
+                            #adds
+                            .build_archetype()
+                    }
                     unsafe fn write(self, dst: *mut u8, archetype: &Archetype) {
                         #[cfg(debug_assertions)]
-                        if !Self::match_archetype(archetype) {
+                        if !Self::archetype_contains(archetype) {
                             panic!("Archetypes do not match");
                         }
                         #writes
@@ -143,7 +155,7 @@ pub fn impl_archetype(input: proc_macro::TokenStream) -> proc_macro::TokenStream
                     }
                     unsafe fn read(src: *const u8, archetype: &Archetype) -> Self {
                         #[cfg(debug_assertions)]
-                        if !Self::match_archetype(archetype) {
+                        if !Self::archetype_contains(archetype) {
                             panic!("Archetypes do not match");
                         }
                         let mut value: Self = MaybeUninit::uninit().assume_init();
@@ -186,11 +198,9 @@ pub fn impl_query(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 let types = types.clone();
                 quote!(#(&& #types::match_archetype(archetype))*)
             };
-            let sets = (0..count).map(|v| Ident::new(&format!("set_{v}"), Span::call_site()));
-            let lets = {
+            let builds = {
                 let types = types.clone();
-                let sets = sets.clone();
-                quote!(#(let #sets = #types::bitset(builder);)*)
+                quote!(#(#types::build_bitset(builder);)*)
             };
             quote! {
                 impl #generics Query for #tuple {
@@ -202,12 +212,8 @@ pub fn impl_query(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                             #(#types::build(ptr, archetype)),*,
                         )
                     }
-                    fn bitset(builder: &mut BitsetBuilder) -> BorrowBitset {
-                        #lets
-                        builder
-                            .start_borrow()
-                            #(.with(#sets))*
-                            .build_borrow()
+                    fn build_bitset(builder: &mut BitsetBuilder) {
+                        #builds
                     }
                 }
             }

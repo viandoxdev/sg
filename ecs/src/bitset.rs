@@ -1,12 +1,11 @@
+use std::fmt::Display;
 use std::ops::{self, Deref};
 use std::{any::TypeId, collections::HashMap};
-
-use crate::WorldId;
 
 /// What are bitsets composed of
 type BitsetComp = u64;
 
-#[derive(Clone, Copy, Default, Debug, Hash)]
+#[derive(Clone, Copy, Default, Debug, Hash, PartialEq, Eq)]
 pub struct Bitset {
     bits: [BitsetComp; Self::LENGTH],
 }
@@ -54,7 +53,7 @@ impl Bitset {
         // Go in reverse, looking for the last non zero component
         for i in (0..Self::LENGTH).rev() {
             if self.bits[i] != 0 {
-                let msb = Self::COMP_BITS - 1 - self.bits[i].trailing_zeros() as usize;
+                let msb = Self::COMP_BITS - self.bits[i].leading_zeros() as usize;
                 return i * Self::COMP_BITS + msb;
             }
         }
@@ -149,24 +148,44 @@ impl ops::BitXorAssign for Bitset {
     }
 }
 
+impl Display for Bitset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let len = self.len();
+        let last = len / Self::COMP_BITS;
+        write!(f, "[")?;
+        for i in (0..=last).rev() {
+            let len = (len - i * Self::COMP_BITS).min(Self::COMP_BITS);
+            write!(f, "{:0len$b}", self.bits[i])?;
+        }
+        write!(f, "]")
+    }
+}
+
 pub struct BitsetBuilder {
-    /// Id of the world this builder refers to, as the mapping from component type to index of bit
-    /// depends on the world
-    id: WorldId,
     borrow: Bitset,
     mutable: Bitset,
     required: Bitset,
+    invalid: bool,
     mapping: HashMap<TypeId, usize>,
 }
 
 impl BitsetBuilder {
-    pub fn new(id: WorldId) -> Self {
+    pub fn new() -> Self {
         Self {
-            id,
             mapping: HashMap::with_capacity(8),
             borrow: Bitset::default(),
             mutable: Bitset::default(),
+            invalid: false,
             required: Bitset::default(),
+        }
+    }
+    fn set_with_bit<T: 'static>(&mut self) -> Bitset {
+        match self.mapping.get(&TypeId::of::<T>()) {
+            Some(index) => Bitset::new_with_bit(*index),
+            None => {
+                self.invalid = true;
+                Bitset::default()
+            }
         }
     }
     pub fn mapping(&self) -> &HashMap<TypeId, usize> {
@@ -179,38 +198,41 @@ impl BitsetBuilder {
         self.borrow = Bitset::default();
         self.mutable = Bitset::default();
         self.required = Bitset::default();
+        self.invalid = false;
         self
     }
     pub fn start_archetype(&mut self) -> &mut Self {
         self.required = Bitset::default();
+        self.invalid = false;
         self
     }
     pub fn borrow<T: 'static>(&mut self) -> &mut Self {
-        let set = Bitset::new_with_bit(self.mapping[&TypeId::of::<T>()]);
+        let set = self.set_with_bit::<T>();
         self.borrow |= set;
         self.required |= set;
         self
     }
     pub fn borrow_mut<T: 'static>(&mut self) -> &mut Self {
-        let set = Bitset::new_with_bit(self.mapping[&TypeId::of::<T>()]);
+        let set = self.set_with_bit::<T>();
         self.borrow |= set;
         self.mutable |= set;
         self.required |= set;
         self
     }
     pub fn borrow_optional<T: 'static>(&mut self) -> &mut Self {
-        let set = Bitset::new_with_bit(self.mapping[&TypeId::of::<T>()]);
+        let set = self.set_with_bit::<T>();
         self.borrow |= set;
         self
     }
     pub fn borrow_optional_mut<T: 'static>(&mut self) -> &mut Self {
-        let set = Bitset::new_with_bit(self.mapping[&TypeId::of::<T>()]);
+        let set = self.set_with_bit::<T>();
         self.borrow |= set;
         self.mutable |= set;
         self
     }
-    pub fn add(&mut self, id: TypeId) -> &mut Self {
-        self.required |= Bitset::new_with_bit(self.mapping[&id]);
+    pub fn add<T: 'static>(&mut self) -> &mut Self {
+        let set = self.set_with_bit::<T>();
+        self.required |= set;
         self
     }
     pub fn with(&mut self, set: BorrowBitset) -> &mut Self {
@@ -219,25 +241,30 @@ impl BitsetBuilder {
         self.required |= set.required;
         self
     }
-    pub fn build_archetype(&self) -> ArchetypeBitset {
-        ArchetypeBitset {
-            world_id: self.id,
-            types: self.required,
+    pub fn build_archetype(&self) -> Option<ArchetypeBitset> {
+        if self.invalid {
+            None
+        } else {
+            Some(ArchetypeBitset {
+                types: self.required,
+            })
         }
     }
-    pub fn build_borrow(&self) -> BorrowBitset {
-        BorrowBitset {
-            world_id: self.id,
-            borrow: self.borrow,
-            mutable: self.mutable,
-            required: self.required,
+    pub fn build_borrow(&self) -> Option<BorrowBitset> {
+        if self.invalid {
+            None
+        } else {
+            Some(BorrowBitset {
+                borrow: self.borrow,
+                mutable: self.mutable,
+                required: self.required,
+            })
         }
     }
 }
 
-#[derive(Hash, Default, Clone, Copy)]
+#[derive(Hash, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ArchetypeBitset {
-    world_id: WorldId,
     types: Bitset,
 }
 
@@ -265,6 +292,14 @@ impl ops::BitXor for ArchetypeBitset {
     }
 }
 
+impl ops::Not for ArchetypeBitset {
+    type Output = ArchetypeBitset;
+    fn not(mut self) -> Self::Output {
+        self.types = !self.types;
+        self
+    }
+}
+
 impl Deref for ArchetypeBitset {
     type Target = Bitset;
     fn deref(&self) -> &Self::Target {
@@ -274,20 +309,14 @@ impl Deref for ArchetypeBitset {
 
 #[derive(Hash, Default, Clone, Copy)]
 pub struct BorrowBitset {
-    /// Id of the world this bitset refers to, as the mapping from component type to index of bit
-    /// depends on the world
-    world_id: WorldId,
     borrow: Bitset,
     mutable: Bitset,
     required: Bitset,
 }
 
 impl BorrowBitset {
-    pub fn new(id: WorldId) -> Self {
-        Self {
-            world_id: id,
-            ..Default::default()
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
     /// Set all the borrowed types as optional
     pub fn optional(mut self) -> Self {
@@ -296,11 +325,10 @@ impl BorrowBitset {
     }
     /// Tests wether or the borrow of self would break aliasing rules with another borrow
     pub fn collide(self, borrow: Self) -> bool {
-        ((self.mutable & borrow.borrow) | (borrow.mutable & self.mutable)).any()
+        ((self.mutable & borrow.borrow) | (borrow.mutable & self.borrow)).any()
     }
     pub fn required(self) -> ArchetypeBitset {
         ArchetypeBitset {
-            world_id: self.world_id,
             types: self.required,
         }
     }
@@ -361,5 +389,19 @@ impl Iterator for BorrowBitsetIter {
             }
             None => None,
         }
+    }
+}
+
+impl Display for BorrowBitset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[")?;
+        for (_, b) in self {
+            match b {
+                BorrowKind::Mutable => write!(f, "M")?,
+                BorrowKind::Imutable => write!(f, "I")?,
+                BorrowKind::None => write!(f, "_")?,
+            }
+        }
+        write!(f, "]")
     }
 }
