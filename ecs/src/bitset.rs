@@ -1,9 +1,10 @@
 use std::fmt::Display;
+use std::hash::Hash;
 use std::ops::{self, Deref};
 use std::{any::TypeId, collections::HashMap};
 
 /// What are bitsets composed of
-type BitsetComp = u64;
+type BitsetComp = u128;
 
 #[derive(Clone, Copy, Default, Debug, Hash, PartialEq, Eq)]
 pub struct Bitset {
@@ -35,6 +36,9 @@ impl Bitset {
     const COMP_BITS: usize = std::mem::size_of::<BitsetComp>() * 8;
     /// How many BitsetComp compose a bitset, this decides the maximum number of types of component in a
     /// world (Self::BITS)
+    #[cfg(feature = "extended_limits")]
+    const LENGTH: usize = 4;
+    #[cfg(not(feature = "extended_limits"))]
     const LENGTH: usize = 1;
     const BITS: usize = Self::COMP_BITS * Self::LENGTH;
 
@@ -161,105 +165,145 @@ impl Display for Bitset {
     }
 }
 
-pub struct BitsetBuilder {
-    borrow: Bitset,
-    mutable: Bitset,
-    required: Bitset,
-    invalid: bool,
-    mapping: HashMap<TypeId, usize>,
+pub struct BitsetMapping<K> {
+    mapping: HashMap<K, usize>,
 }
 
-impl BitsetBuilder {
+impl<K: Eq + Hash> BitsetMapping<K> {
     pub fn new() -> Self {
         Self {
-            mapping: HashMap::with_capacity(8),
-            borrow: Bitset::default(),
-            mutable: Bitset::default(),
-            invalid: false,
-            required: Bitset::default(),
+            mapping: HashMap::new(),
         }
     }
+    #[inline(always)]
+    pub fn next(&self) -> usize {
+        self.mapping.len()
+    }
+    pub fn map(&mut self, key: K) -> usize {
+        let index = self.next();
+        self.mapping.insert(key, index);
+        index
+    }
+    pub fn index_of(&self, key: &K) -> Option<usize> {
+        self.mapping.get(key).copied()
+    }
+    pub fn has(&self, key: &K) -> bool {
+        self.mapping.contains_key(key)
+    }
+}
+
+pub trait BitsetBuilder<'a> {
+    type Key;
+    type Output;
+    fn start(mapping: &'a BitsetMapping<Self::Key>) -> Self;
+    fn build(self) -> Option<Self::Output>;
+}
+
+macro_rules! bitset_builder {
+    ($($o:ident { type Key = $k:ty; type Builder = $b:ident; type Mapping = $m:ident; fields { $($f:ident),*$(,)? }})*) => {
+        $(
+            pub type $m = BitsetMapping<$k>;
+            pub struct $b<'a> {
+                mapping: &'a $m,
+                invalid: bool,
+                $($f: Bitset),*
+            }
+            impl<'a> BitsetBuilder<'a> for $b<'a> {
+                type Key = $k;
+                type Output = $o;
+                fn start(mapping: &'a BitsetMapping<Self::Key>) -> Self {
+                    Self {
+                        mapping,
+                        invalid: false,
+                        $($f: Bitset::default()),*
+                    }
+                }
+                fn build(self) -> Option<Self::Output> {
+                    if self.invalid {
+                        None
+                    } else {
+                        Some($o {
+                            $($f: self.$f),*
+                        })
+                    }
+                }
+            }
+        )*
+    };
+}
+
+bitset_builder! {
+    BorrowBitset {
+        type Key = TypeId;
+        type Builder = BorrowBitsetBuilder;
+        type Mapping = BorrowBitsetMapping;
+        fields {
+            borrow,
+            mutable,
+            required,
+        }
+    }
+
+    ArchetypeBitset {
+        type Key = TypeId;
+        type Builder = ArchetypeBitsetBuilder;
+        type Mapping = ArchetypeBitsetMapping;
+        fields {
+            types
+        }
+    }
+}
+
+impl<'a> BorrowBitsetBuilder<'a> {
     fn set_with_bit<T: 'static>(&mut self) -> Bitset {
-        match self.mapping.get(&TypeId::of::<T>()) {
-            Some(index) => Bitset::new_with_bit(*index),
+        match self.mapping.index_of(&TypeId::of::<T>()) {
+            Some(index) => Bitset::new_with_bit(index),
             None => {
                 self.invalid = true;
                 Bitset::default()
             }
         }
     }
-    pub fn mapping(&self) -> &HashMap<TypeId, usize> {
-        &self.mapping
-    }
-    pub fn mapping_mut(&mut self) -> &mut HashMap<TypeId, usize> {
-        &mut self.mapping
-    }
-    pub fn start_borrow(&mut self) -> &mut Self {
-        self.borrow = Bitset::default();
-        self.mutable = Bitset::default();
-        self.required = Bitset::default();
-        self.invalid = false;
-        self
-    }
-    pub fn start_archetype(&mut self) -> &mut Self {
-        self.required = Bitset::default();
-        self.invalid = false;
-        self
-    }
-    pub fn borrow<T: 'static>(&mut self) -> &mut Self {
+    pub fn borrow<T: 'static>(mut self) -> Self {
         let set = self.set_with_bit::<T>();
         self.borrow |= set;
         self.required |= set;
         self
     }
-    pub fn borrow_mut<T: 'static>(&mut self) -> &mut Self {
+    pub fn borrow_mut<T: 'static>(mut self) -> Self {
         let set = self.set_with_bit::<T>();
         self.borrow |= set;
         self.mutable |= set;
         self.required |= set;
         self
     }
-    pub fn borrow_optional<T: 'static>(&mut self) -> &mut Self {
+    pub fn borrow_optional<T: 'static>(mut self) -> Self {
         let set = self.set_with_bit::<T>();
         self.borrow |= set;
         self
     }
-    pub fn borrow_optional_mut<T: 'static>(&mut self) -> &mut Self {
+    pub fn borrow_optional_mut<T: 'static>(mut self) -> Self {
         let set = self.set_with_bit::<T>();
         self.borrow |= set;
         self.mutable |= set;
         self
     }
-    pub fn add<T: 'static>(&mut self) -> &mut Self {
+}
+
+impl<'a> ArchetypeBitsetBuilder<'a> {
+    fn set_with_bit<T: 'static>(&mut self) -> Bitset {
+        match self.mapping.index_of(&TypeId::of::<T>()) {
+            Some(index) => Bitset::new_with_bit(index),
+            None => {
+                self.invalid = true;
+                Bitset::default()
+            }
+        }
+    }
+    pub fn add<T: 'static>(mut self) -> Self {
         let set = self.set_with_bit::<T>();
-        self.required |= set;
+        self.types |= set;
         self
-    }
-    pub fn with(&mut self, set: BorrowBitset) -> &mut Self {
-        self.borrow |= set.borrow;
-        self.mutable |= set.mutable;
-        self.required |= set.required;
-        self
-    }
-    pub fn build_archetype(&self) -> Option<ArchetypeBitset> {
-        if self.invalid {
-            None
-        } else {
-            Some(ArchetypeBitset {
-                types: self.required,
-            })
-        }
-    }
-    pub fn build_borrow(&self) -> Option<BorrowBitset> {
-        if self.invalid {
-            None
-        } else {
-            Some(BorrowBitset {
-                borrow: self.borrow,
-                mutable: self.mutable,
-                required: self.required,
-            })
-        }
     }
 }
 

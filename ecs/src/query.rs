@@ -1,67 +1,120 @@
-use std::{marker::PhantomData, ptr::NonNull};
+use std::{any::TypeId, marker::PhantomData, ptr::NonNull};
 
 use ecs_macros::impl_query;
 
 use crate::{
     archetype::Archetype,
-    bitset::{BitsetBuilder, BorrowBitset},
+    bitset::{BitsetBuilder, BorrowBitset, BorrowBitsetBuilder, BorrowBitsetMapping},
 };
+
+/// A single query used in a tuple
+trait QuerySingle {
+    fn match_archetype(archetype: &Archetype) -> bool;
+    fn build(ptr: *mut u8, archetype: &Archetype) -> Self;
+    #[doc(hidden)]
+    fn add_to_bitset(builder: BorrowBitsetBuilder) -> BorrowBitsetBuilder;
+    fn r#type() -> TypeId;
+}
 
 pub trait Query {
     fn match_archetype(archetype: &Archetype) -> bool;
     fn build(ptr: *mut u8, archetype: &Archetype) -> Self;
     #[doc(hidden)]
-    fn build_bitset(builder: &mut BitsetBuilder);
-    fn bitset(builder: &mut BitsetBuilder) -> Option<BorrowBitset> {
-        builder.start_borrow();
-        Self::build_bitset(builder);
-        builder.build_borrow()
+    fn add_to_bitset(builder: BorrowBitsetBuilder) -> BorrowBitsetBuilder;
+    fn bitset(mapping: &BorrowBitsetMapping) -> Option<BorrowBitset> {
+        let builder = BorrowBitsetBuilder::start(mapping);
+        Self::add_to_bitset(builder).build()
     }
+    fn types() -> Vec<TypeId>;
 }
 
-impl<T: 'static> Query for &T {
+impl<T: 'static> QuerySingle for &T {
     fn match_archetype(archetype: &Archetype) -> bool {
         archetype.has::<T>()
     }
     fn build(ptr: *mut u8, archetype: &Archetype) -> Self {
         unsafe { &*(ptr.add(archetype.offset::<T>()) as *const T) }
     }
-    fn build_bitset(builder: &mut BitsetBuilder) {
-        builder.borrow::<T>();
+    fn add_to_bitset(builder: BorrowBitsetBuilder) -> BorrowBitsetBuilder {
+        builder.borrow::<T>()
+    }
+    fn r#type() -> TypeId {
+        TypeId::of::<T>()
     }
 }
 
-impl<T: 'static> Query for &mut T {
+impl<T: 'static> QuerySingle for &mut T {
     fn match_archetype(archetype: &Archetype) -> bool {
         archetype.has::<T>()
     }
     fn build(ptr: *mut u8, archetype: &Archetype) -> Self {
         unsafe { &mut *(ptr.add(archetype.offset::<T>()) as *mut T) }
     }
-    fn build_bitset(builder: &mut BitsetBuilder) {
-        builder.borrow_mut::<T>();
+    fn add_to_bitset(builder: BorrowBitsetBuilder) -> BorrowBitsetBuilder {
+        builder.borrow_mut::<T>()
+    }
+    fn r#type() -> TypeId {
+        TypeId::of::<T>()
     }
 }
 
-impl<T: Query> Query for Option<T> {
+impl<T: 'static> QuerySingle for Option<&T> {
     fn match_archetype(_archetype: &Archetype) -> bool {
         true
     }
     fn build(ptr: *mut u8, archetype: &Archetype) -> Self {
-        if T::match_archetype(archetype) {
-            Some(T::build(ptr, archetype))
+        if archetype.has::<T>() {
+            Some(<&T as QuerySingle>::build(ptr, archetype))
         } else {
             None
         }
     }
-    fn build_bitset(builder: &mut BitsetBuilder) {
-        if let Some(set) = T::bitset(builder) {
-            builder.with(set.optional());
-        }
+    fn add_to_bitset(builder: BorrowBitsetBuilder) -> BorrowBitsetBuilder {
+        builder.borrow_optional::<T>()
+    }
+    fn r#type() -> TypeId {
+        TypeId::of::<T>()
     }
 }
 
+impl<T: 'static> QuerySingle for Option<&mut T> {
+    fn match_archetype(_archetype: &Archetype) -> bool {
+        true
+    }
+    fn build(ptr: *mut u8, archetype: &Archetype) -> Self {
+        if archetype.has::<T>() {
+            Some(<&mut T as QuerySingle>::build(ptr, archetype))
+        } else {
+            None
+        }
+    }
+    fn add_to_bitset(builder: BorrowBitsetBuilder) -> BorrowBitsetBuilder {
+        builder.borrow_optional_mut::<T>()
+    }
+    fn r#type() -> TypeId {
+        TypeId::of::<T>()
+    }
+}
+
+impl<T: QuerySingle> Query for T {
+    fn match_archetype(archetype: &Archetype) -> bool {
+        T::match_archetype(archetype)
+    }
+    fn build(ptr: *mut u8, archetype: &Archetype) -> Self {
+        T::build(ptr, archetype)
+    }
+    fn add_to_bitset(builder: BorrowBitsetBuilder) -> BorrowBitsetBuilder {
+        T::add_to_bitset(builder)
+    }
+    fn types() -> Vec<TypeId> {
+        vec![Self::r#type()]
+    }
+}
+
+#[cfg(not(feature = "extended_limits"))]
 impl_query!(16);
+#[cfg(feature = "extended_limits")]
+impl_query!(24);
 
 /// An iterator that runs a query on a store
 ///

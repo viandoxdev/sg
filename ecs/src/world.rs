@@ -1,36 +1,69 @@
-use std::any::TypeId;
-
-use parking_lot::Mutex;
+use std::{any::TypeId, mem::MaybeUninit};
 
 use crate::{
     archetype::{ArchetypeStorage, IntoArchetype},
-    bitset::{ArchetypeBitset, BitsetBuilder, BorrowBitset},
+    bitset::{ArchetypeBitset, BitsetMapping, BorrowBitset},
     borrows::{BorrowGuard, Borrows},
     entity::{Entity, LocationMap},
     query::{Query, QueryIterBundle},
 };
 
 pub struct World {
-    bitset_builder: Mutex<BitsetBuilder>,
+    mapping: BitsetMapping<TypeId>,
     archetypes: Vec<(ArchetypeStorage, ArchetypeBitset)>,
     borrows: Borrows,
     location_map: LocationMap,
 }
 
+trait VecExt<T> {
+    unsafe fn get_mut_many_unchecked<const N: usize>(
+        &mut self,
+        indices: [usize; N],
+    ) -> [Option<&mut T>; N];
+    fn get_mut_many<const N: usize>(&mut self, indices: [usize; N]) -> [Option<&mut T>; N];
+}
+impl<T> VecExt<T> for Vec<T>
+where
+    T: Sized,
+{
+    unsafe fn get_mut_many_unchecked<const N: usize>(
+        &mut self,
+        indices: [usize; N],
+    ) -> [Option<&mut T>; N] {
+        let mut res: MaybeUninit<[Option<&mut T>; N]> = MaybeUninit::uninit();
+        let s = self as *mut Self;
+        for i in 0..N {
+            (res.as_mut_ptr() as *mut Option<&mut T>)
+                .add(i)
+                .write((*s).get_mut(indices[i]));
+        }
+        res.assume_init()
+    }
+    fn get_mut_many<const N: usize>(&mut self, indices: [usize; N]) -> [Option<&mut T>; N] {
+        for i in 0..N {
+            for j in 0..N {
+                if i != j && indices[i] == indices[j] {
+                    panic!("Trying to borrow mutable the same index more than once at a time (index {i} is the same as index {j}: {})", indices[i])
+                }
+            }
+        }
+        unsafe { self.get_mut_many_unchecked(indices) }
+    }
+}
+
 impl World {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
+            mapping: BitsetMapping::new(),
             borrows: Borrows::new(),
-            bitset_builder: Mutex::new(BitsetBuilder::new()),
             archetypes: Vec::with_capacity(8),
             location_map: LocationMap::new(),
         }
     }
     fn register_component_if_needed(&mut self, id: TypeId) {
-        let b = self.bitset_builder.get_mut();
-        if !b.mapping().contains_key(&id) {
-            let new_index = b.mapping().len();
-            b.mapping_mut().insert(id, new_index);
+        let mapping = &mut self.mapping;
+        if !mapping.has(&id) {
+            mapping.map(id);
             self.borrows.extend(1);
         }
     }
@@ -39,7 +72,7 @@ impl World {
         for t in T::types() {
             self.register_component_if_needed(t);
         }
-        let set = T::bitset(&mut self.bitset_builder.lock()).unwrap();
+        let set = T::bitset(&self.mapping).unwrap();
         let ats = ArchetypeStorage::new::<T>();
         self.archetypes.push((ats, set));
         &mut self.archetypes[index].0
@@ -119,7 +152,7 @@ impl World {
         for t in T::types() {
             self.register_component_if_needed(t);
         }
-        let t_bitset = T::bitset(&mut self.bitset_builder.lock()).unwrap();
+        let t_bitset = T::bitset(&self.mapping).unwrap();
         if (t_bitset & archetype_bitset).any() {
             panic!("Can't add a component to an entity that already has one");
         }
@@ -140,12 +173,9 @@ impl World {
                 i
             }
         };
-        // Safety: i and loc.archetype are never the same so this is just borrowing two different
-        // values
-        let (src_storage, dst_storage): (&mut _, &mut _) = unsafe {
-            let r = (&mut self.archetypes) as *mut Vec<(ArchetypeStorage, ArchetypeBitset)>;
-            (&mut (&mut *r)[loc.archetype].0, &mut (&mut *r)[dst_index].0)
-        };
+        let [src_storage, dst_storage] = self.archetypes.get_mut_many([loc.archetype, dst_index]);
+        let src_storage = &mut src_storage.unwrap().0;
+        let dst_storage = &mut dst_storage.unwrap().0;
 
         unsafe {
             let index = src_storage.move_entity(loc.entity, dst_storage);
@@ -161,7 +191,7 @@ impl World {
         let archetype_bitset = self.archetypes[loc.archetype].1;
         let mut archetype = self.archetypes[loc.archetype].0.archetype().clone();
 
-        let t_bitset = T::bitset(&mut self.bitset_builder.lock()).unwrap();
+        let t_bitset = T::bitset(&self.mapping).unwrap();
         if t_bitset & archetype_bitset != t_bitset {
             panic!("Can't take a component from an entity that doesn't have one");
         }
@@ -182,12 +212,9 @@ impl World {
                 i
             }
         };
-        // Safety: i and loc.archetype are never the same so this is just borrowing two different
-        // values
-        let (src_storage, dst_storage): (&mut _, &mut _) = unsafe {
-            let r = (&mut self.archetypes) as *mut Vec<(ArchetypeStorage, ArchetypeBitset)>;
-            (&mut (&mut *r)[loc.archetype].0, &mut (&mut *r)[dst_index].0)
-        };
+        let [src_storage, dst_storage] = self.archetypes.get_mut_many([loc.archetype, dst_index]);
+        let src_storage = &mut src_storage.unwrap().0;
+        let dst_storage = &mut dst_storage.unwrap().0;
         let res;
         unsafe {
             res = src_storage.read(loc.entity);
@@ -200,13 +227,12 @@ impl World {
     }
     fn query_iter<Q: Query>(&self, set: BorrowBitset) -> QueryIterBundle<Q> {
         let requirements = set.required();
-        let storages =
-            self.archetypes
-                .iter()
-                .filter_map(|(storage, set)| match (*set & requirements).any() {
-                    true => Some(storage),
-                    false => None,
-                });
+        let storages = self.archetypes.iter().filter_map(|(storage, set)| {
+            match *set & requirements == requirements {
+                true => Some(storage),
+                false => None,
+            }
+        });
         // TODO: use with_capacity
         let mut iter = QueryIterBundle::new();
         for storage in storages {
@@ -214,8 +240,15 @@ impl World {
         }
         iter
     }
+    pub unsafe fn query_unchecked<Q: Query>(&self) -> QueryIterBundle<Q> {
+        let set = match Q::bitset(&self.mapping) {
+            Some(set) => set,
+            None => return QueryIterBundle::new(),
+        };
+        self.query_iter::<Q>(set)
+    }
     pub fn query<Q: Query>(&self) -> BorrowGuard<'_, QueryIterBundle<Q>> {
-        let set = match Q::bitset(&mut self.bitset_builder.lock()) {
+        let set = match Q::bitset(&self.mapping) {
             Some(set) => set,
             None => return BorrowGuard::dummy(QueryIterBundle::new()),
         };
@@ -223,7 +256,7 @@ impl World {
         self.borrows.borrow(set, iter)
     }
     pub fn query_single<Q: Query>(&self) -> Option<BorrowGuard<'_, Q>> {
-        let set = Q::bitset(&mut self.bitset_builder.lock())?;
+        let set = Q::bitset(&self.mapping)?;
         let mut iter = self.query_iter::<Q>(set);
         iter.next().map(|q| self.borrows.borrow(set, q))
     }
@@ -237,7 +270,8 @@ mod tests {
     #[test]
     fn push() {
         let mut w = World::new();
-        w.spawn(("a".to_owned(),));
+        let s = "a".to_owned();
+        w.spawn((s,));
         let mut iter = w.query::<&String>();
         assert_eq!("a", iter.next().unwrap());
     }

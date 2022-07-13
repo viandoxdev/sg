@@ -11,3 +11,6 @@ log = "0.4.16"
 ecs_macros = { path = "../ecs_macros" }
 parking_lot = "0.12.1"
 slotmap = "1.0.6"
+
+[features]
+extended_limits = []

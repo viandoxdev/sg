@@ -88,7 +88,7 @@ pub fn impl_archetype(input: proc_macro::TokenStream) -> proc_macro::TokenStream
                 let types = types.clone();
                 let indices = indices.clone();
                 quote!{#(
-                    std::ptr::copy(src.add(archetype.offset::<#types>()) as *const #types, &mut value.#indices as *mut #types, 1);
+                    std::ptr::copy(src.add(archetype.offset::<#types>()) as *const #types, &mut (*value.as_mut_ptr()).#indices as *mut #types, 1);
                 )*}
             };
             let typeids = {
@@ -106,14 +106,11 @@ pub fn impl_archetype(input: proc_macro::TokenStream) -> proc_macro::TokenStream
                     fn into_archetype() -> Archetype {
                         let layout = Layout::new::<#tuple>();
                         let mut info = HashMap::with_capacity(#cap);
-
                         unsafe {
-                            let ptr = std::ptr::null::<#tuple>();
+                            let val = MaybeUninit::<#tuple>::uninit();
                             #(
                                 info.insert(TypeId::of::<#types>(), ComponentType {
-                                    // ptr is a null pointer, so the offset from any pointer p from
-                                    // it is the pointer p's value (-> as usize gives offset)
-                                    offset: (&(*ptr).#indices as *const #types) as usize,
+                                    offset: std::ptr::addr_of!((*val.as_ptr()).#indices) as usize - val.as_ptr() as usize,
                                     drop: match std::mem::needs_drop::<#types>() {
                                         true => Some(get_drop::<#types>()),
                                         false => None,
@@ -139,10 +136,10 @@ pub fn impl_archetype(input: proc_macro::TokenStream) -> proc_macro::TokenStream
                     fn archetype_contains(archetype: &Archetype) -> bool {
                         true #matches
                     }
-                    fn bitset(builder: &mut BitsetBuilder) -> Option<ArchetypeBitset> {
-                        builder.start_archetype()
+                    fn bitset(mapping: &ArchetypeBitsetMapping) -> Option<ArchetypeBitset> {
+                        ArchetypeBitsetBuilder::start(mapping)
                             #adds
-                            .build_archetype()
+                            .build()
                     }
                     unsafe fn write(self, dst: *mut u8, archetype: &Archetype) {
                         #[cfg(debug_assertions)]
@@ -158,9 +155,9 @@ pub fn impl_archetype(input: proc_macro::TokenStream) -> proc_macro::TokenStream
                         if !Self::archetype_contains(archetype) {
                             panic!("Archetypes do not match");
                         }
-                        let mut value: Self = MaybeUninit::uninit().assume_init();
+                        let mut value = MaybeUninit::<Self>::uninit();
                         #reads
-                        value
+                        value.assume_init()
                     }
                     fn types() -> Vec<TypeId> {
                         vec![
@@ -189,18 +186,21 @@ pub fn impl_query(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 let types = types.clone();
                 quote!((#(#types),*,))
             };
-            // eg "A: 'static, B: 'static"
             let generics = {
                 let types = types.clone();
-                quote!(<#(#types: Query),*>)
+                quote!(<#(#types: QuerySingle),*>)
             };
             let matches = {
                 let types = types.clone();
                 quote!(#(&& #types::match_archetype(archetype))*)
             };
-            let builds = {
+            let adds = {
                 let types = types.clone();
-                quote!(#(#types::build_bitset(builder);)*)
+                quote!(#(builder = #types::add_to_bitset(builder);)*)
+            };
+            let typeids = {
+                let types = types.clone();
+                quote!(#(#types::r#type()),*)
             };
             quote! {
                 impl #generics Query for #tuple {
@@ -212,8 +212,12 @@ pub fn impl_query(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                             #(#types::build(ptr, archetype)),*,
                         )
                     }
-                    fn build_bitset(builder: &mut BitsetBuilder) {
-                        #builds
+                    fn add_to_bitset(mut builder: BorrowBitsetBuilder) -> BorrowBitsetBuilder {
+                        #adds
+                        builder
+                    }
+                    fn types() -> Vec<TypeId> {
+                        vec![#typeids]
                     }
                 }
             }
@@ -223,4 +227,68 @@ pub fn impl_query(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         }
     };
     output.into()
+}
+
+#[proc_macro]
+pub fn impl_system(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let count = parse_macro_input!(input as Count).count;
+    let impls = (0..=count).map(|count| {
+        // eg "A", "B"
+        let types = (0..count).map(|v| n_to_type(v, count));
+        let run = {
+            let types = types.clone();
+            quote! {
+                fn run(self, context: &ExecutionContext) {
+                    self(#(#types::fetch(context)),*);
+                }
+            }
+        };
+        let registers = {
+            let types = types.clone();
+            quote!(#(#types::register(mappings);)*)
+        };
+        let requires = {
+            let types = types.clone();
+            quote!(#(builder = #types::require(builder);)*)
+        };
+        let generics = {
+            let types = types.clone();
+            quote!(<'r, #(#types: SystemArgument<'r>),*>)
+        };
+        let caller = {
+            let types = types.clone();
+            quote! {
+                unsafe {
+                    std::mem::transmute(Self::run as fn(fn(#(#types),*), &ExecutionContext))
+                }
+            }
+        };
+        quote! {
+            impl #generics IntoSystem for fn(#(#types),*) {
+                #run
+
+                fn into_system(self, mappings: &mut RequirementsMappings) -> System {
+                    #registers
+                    let mut builder = RequirementsBuilder::start(mappings);
+                    #requires
+                    // Arguments have been registering so unwrap is safe
+                    let requirements = builder.build().unwrap();
+                    System {
+                        requirements,
+                        pointer: SystemPointer {
+                            // SAFETY: This is just transmuting from a fn(A, B, ...) to a fn()
+                            callee: unsafe { std::mem::transmute(self) },
+                            // SAFETY: Likewise, this changes the type of the first argument from fn(A, B, ...)
+                            // to fn()
+                            caller: #caller
+                        }
+                    }
+                }
+                fn id(self) -> SystemId {
+                    SystemId(self as usize)
+                }
+            }
+        }
+    });
+    quote!(#(#impls)*).into()
 }

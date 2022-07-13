@@ -1,16 +1,16 @@
 use std::{
     alloc::{self, Layout},
-    any::{Any, TypeId},
+    any::TypeId,
     collections::HashMap,
     mem::MaybeUninit,
     ops::{Bound, RangeBounds},
-    ptr::{DynMetadata, NonNull},
+    ptr::NonNull,
 };
 
 use ecs_macros::impl_archetype;
 
 use crate::{
-    bitset::{ArchetypeBitset, BitsetBuilder},
+    bitset::{ArchetypeBitset, ArchetypeBitsetBuilder, ArchetypeBitsetMapping, BitsetBuilder},
     query::{Query, QueryIter},
 };
 
@@ -353,30 +353,17 @@ impl Drop for ArchetypeStorage {
         self.clear(..);
         // dealloc memory
         if self.capacity > 0 && !self.archetype.is_zst() {
-            //unsafe {
-            //    let layout = self.archetype.layout.repeat(self.capacity).unwrap().0;
-            //    alloc::dealloc(self.data.as_ptr(), layout);
-            //}
+            unsafe {
+                let layout = self.archetype.layout.repeat(self.capacity).unwrap().0;
+                alloc::dealloc(self.data.as_ptr(), layout);
+            }
         }
     }
 }
 
-// Where the cursed shit happens
 /// Get the drop_in_place implementation for any type T
 unsafe fn get_drop<T: 'static>() -> DropInPlace {
-    // Get a raw fat dyn trait pointer
-    let fat = std::ptr::null::<T>() as *const dyn Any;
-    // get the metadata
-    let (_, metadata): (_, DynMetadata<dyn Any>) = fat.to_raw_parts();
-    // SAFETY: This is not safe, this only works because the DynMetadata struct has only
-    // one (not ZST) field, so the struct should already follow alignment rules, and with
-    // no reordering possible, a DynMetadata can be reinterpreted as that field: a pointer
-    // to a VTable struct.
-    // The VTable struct is repr(C), so reinterpreting this pointer as a pointer to its
-    // first field (the fn pointer for drop_in_place) IS valid.
-    let drop_ptr: *const fn(*mut ()) = std::mem::transmute(metadata);
-    // dereference the pointer to the fn pointer
-    *drop_ptr
+    return std::mem::transmute(std::ptr::drop_in_place::<T> as unsafe fn(*mut T));
 }
 
 pub trait IntoArchetype {
@@ -387,7 +374,7 @@ pub trait IntoArchetype {
     fn match_archetype(archetype: &Archetype) -> bool;
     /// Check if an archetype contains at least all the types of this archetype.
     fn archetype_contains(archetype: &Archetype) -> bool;
-    fn bitset(builder: &mut BitsetBuilder) -> Option<ArchetypeBitset>;
+    fn bitset(mapping: &ArchetypeBitsetMapping) -> Option<ArchetypeBitset>;
     /// Write self to dst, archetypes must match (order independant)
     unsafe fn write(self, dst: *mut u8, archetype: &Archetype);
     /// Read a value from src,, archetypes must match (order independant)
@@ -398,7 +385,10 @@ pub trait IntoArchetype {
 
 // Implement IntoArchetype for generic tuples of length 0 to 16
 // see ecs_macros for implementation
+#[cfg(not(feature = "extended_limits"))]
 impl_archetype!(16);
+#[cfg(feature = "extended_limits")]
+impl_archetype!(24);
 
 #[cfg(test)]
 mod tests {
