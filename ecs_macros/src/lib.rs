@@ -235,14 +235,6 @@ pub fn impl_system(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let impls = (0..=count).map(|count| {
         // eg "A", "B"
         let types = (0..count).map(|v| n_to_type(v, count));
-        let run = {
-            let types = types.clone();
-            quote! {
-                fn run(self, context: &ExecutionContext) {
-                    self(#(#types::fetch(context)),*);
-                }
-            }
-        };
         let registers = {
             let types = types.clone();
             quote!(#(#types::register(mappings);)*)
@@ -253,20 +245,17 @@ pub fn impl_system(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         };
         let generics = {
             let types = types.clone();
-            quote!(<'r, #(#types: SystemArgument<'r>),*>)
+            let types2 = types.clone();
+            quote!(<Func: Fn(#(#types2),*) + 'static, #(#types: SystemArgument),*>)
         };
-        let caller = {
+        let args = {
             let types = types.clone();
             quote! {
-                unsafe {
-                    std::mem::transmute(Self::run as fn(fn(#(#types),*), &ExecutionContext))
-                }
+                #(#types::fetch(context)),*
             }
         };
         quote! {
-            impl #generics IntoSystem for fn(#(#types),*) {
-                #run
-
+            impl #generics IntoSystem<(#(#types),*)> for Func {
                 fn into_system(self, mappings: &mut RequirementsMappings) -> System {
                     #registers
                     let mut builder = RequirementsBuilder::start(mappings);
@@ -275,17 +264,10 @@ pub fn impl_system(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     let requirements = builder.build().unwrap();
                     System {
                         requirements,
-                        pointer: SystemPointer {
-                            // SAFETY: This is just transmuting from a fn(A, B, ...) to a fn()
-                            callee: unsafe { std::mem::transmute(self) },
-                            // SAFETY: Likewise, this changes the type of the first argument from fn(A, B, ...)
-                            // to fn()
-                            caller: #caller
-                        }
+                        run: Box::new(move |context| unsafe {
+                            self(#args)
+                        }),
                     }
-                }
-                fn id(self) -> SystemId {
-                    SystemId(self as usize)
                 }
             }
         }

@@ -1,8 +1,7 @@
 use crate::{
     bitset::{BitsetBuilder, BorrowBitset, BorrowBitsetBuilder, BorrowBitsetMapping},
-    borrows::BorrowGuard,
+    executor::ExecutionContext,
     query::{Query, QueryIterBundle},
-    scheduler::ExecutionContext,
 };
 use ecs_macros::impl_system;
 use std::any::TypeId;
@@ -23,6 +22,12 @@ impl RequirementsMappings {
             components: BorrowBitsetMapping::new(),
             resources: BorrowBitsetMapping::new(),
         }
+    }
+}
+
+impl Default for RequirementsMappings {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -48,25 +53,24 @@ impl<'a> RequirementsBuilder<'a> {
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Clone, Copy)]
-pub struct SystemId(usize);
-
-pub trait IntoSystem: Copy {
-    // IntoSystem is implemented for fn pointers which all implement copy
-    fn run(self, context: &ExecutionContext);
+/// A trait implemented on all Fn that are systems
+pub trait IntoSystem<A> {
+    /// Create a System struct representing the system
     fn into_system(self, mappings: &mut RequirementsMappings) -> System;
-    fn id(self) -> SystemId;
 }
 
-trait SystemArgument<'r> {
-    fn fetch(context: &ExecutionContext) -> Self;
-    fn require<'a>(builder: RequirementsBuilder) -> RequirementsBuilder;
+trait SystemArgument {
+    /// Fetch the argument from an ExecutionContext, this ignores aliasing and is unsafe
+    unsafe fn fetch(context: &ExecutionContext) -> Self;
+    /// Get the requirements that this argument implies
+    fn require(builder: RequirementsBuilder) -> RequirementsBuilder;
+    /// Register the types that this argument references in the mapping
     fn register(mappings: &mut RequirementsMappings);
 }
 
-pub type Entities<'a, Q> = BorrowGuard<'a, QueryIterBundle<Q>>;
+pub type Entities<Q> = QueryIterBundle<Q>;
 
-impl<'r, Q: Query> SystemArgument<'r> for Entities<'r, Q> {
+impl<Q: Query> SystemArgument for Entities<Q> {
     fn register(mappings: &mut RequirementsMappings) {
         for ty in Q::types() {
             if !mappings.components.has(&ty) {
@@ -74,69 +78,63 @@ impl<'r, Q: Query> SystemArgument<'r> for Entities<'r, Q> {
             }
         }
     }
-    fn require<'a>(mut builder: RequirementsBuilder) -> RequirementsBuilder {
+    fn require(mut builder: RequirementsBuilder) -> RequirementsBuilder {
         builder.components = Q::add_to_bitset(builder.components);
         builder
     }
-    fn fetch(context: &ExecutionContext) -> Self {
-        // SAFETY: ¯\_(ツ)_/¯ its probably alr
-        unsafe { std::mem::transmute(context.world.query::<Q>()) }
+    unsafe fn fetch(context: &ExecutionContext) -> Self {
+        std::mem::transmute(context.world.query_unchecked::<Q>())
     }
 }
 
-impl<'r, T: 'static> SystemArgument<'r> for &'r T {
+impl<'r, T: 'static> SystemArgument for &'r T {
     fn register(mappings: &mut RequirementsMappings) {
         if !mappings.resources.has(&TypeId::of::<T>()) {
             mappings.resources.map(TypeId::of::<T>());
         }
     }
-    fn require<'a>(mut builder: RequirementsBuilder) -> RequirementsBuilder {
+    fn require(mut builder: RequirementsBuilder) -> RequirementsBuilder {
         builder.resources = builder.resources.borrow::<T>();
         builder
     }
-    fn fetch(context: &ExecutionContext) -> Self {
+    unsafe fn fetch(context: &ExecutionContext) -> Self {
         let res = context
             .executor
             .get_resource::<T>()
             .unwrap_or_else(|| panic!("Resource not in system: {}", std::any::type_name::<T>()));
-        // transform lifetime to be valid. The system is guarenteed to be run with reference that
-        // lives for at least the duration of the function's runtime.
-        unsafe { &*(res as *const T) }
+        // transform lifetime to be valid
+        &*(res as *const T)
     }
 }
 
-impl<'r, T: 'static> SystemArgument<'r> for &'r mut T {
+impl<'r, T: 'static> SystemArgument for &'r mut T {
     fn register(mappings: &mut RequirementsMappings) {
         if !mappings.resources.has(&TypeId::of::<T>()) {
             mappings.resources.map(TypeId::of::<T>());
         }
     }
-    fn require<'a>(mut builder: RequirementsBuilder) -> RequirementsBuilder {
+    fn require(mut builder: RequirementsBuilder) -> RequirementsBuilder {
         builder.resources = builder.resources.borrow::<T>();
         builder
     }
-    fn fetch(context: &ExecutionContext) -> Self {
-        unsafe {
-            // Scheduling guarentees no aliasing
-            // lives for at least the duration of the function's runtime.
-            let res = context
-                .executor
-                .get_resource_mut_unchecked::<T>()
-                .unwrap_or_else(|| {
-                    panic!("Resource not in system: {}", std::any::type_name::<T>())
-                });
-            // transform lifetime to be valid. The system is guarenteed to be run with reference that
-            &mut *(res as *mut T)
-        }
+    unsafe fn fetch(context: &ExecutionContext) -> Self {
+        let res = context
+            .executor
+            .get_resource_mut_unchecked::<T>()
+            .unwrap_or_else(|| panic!("Resource not in system: {}", std::any::type_name::<T>()));
+        // transform lifetime to be valid.
+        &mut *(res as *mut T)
     }
 }
 
+/// A struct representing a system with some metadata
 pub struct System {
     requirements: Requirements,
-    pointer: SystemPointer,
+    run: Box<dyn Fn(&ExecutionContext)>,
 }
 
 impl System {
+    /// Check if the system depends on another
     pub fn depends_on(&self, other: &Self) -> bool {
         self.requirements
             .components
@@ -146,25 +144,10 @@ impl System {
                 .resources
                 .collide(other.requirements.resources)
     }
-    pub fn run(&self, context: &ExecutionContext) {
-        self.pointer.execute(context);
-    }
-}
-
-pub struct SystemPointer {
-    /// A fn pointer to the system's function, this pointer isn't valid in itself as its arguments
-    /// aren't known. It is unsafe to call this directly
-    callee: fn(),
-    /// A fn pointer to a function that will pass the right arguments to the callee by fetching
-    /// them from an ExecutionContext.
-    caller: fn(fn(), &ExecutionContext),
-}
-
-/// Akin to a fn pointer of a system
-impl SystemPointer {
-    #[inline(always)]
-    pub fn execute(&self, context: &ExecutionContext) {
-        (self.caller)(self.callee, context)
+    /// Execute the system, this bypasses any aliasing checks and should only be used when proven
+    /// safe
+    pub unsafe fn run(&self, context: &ExecutionContext) {
+        (self.run)(context);
     }
 }
 
@@ -172,3 +155,6 @@ impl SystemPointer {
 impl_system!(16);
 #[cfg(feature = "extended_limits")]
 impl_system!(24);
+
+// Annoyingly enough, this can't really be tested as is, because systems rely on an
+// ExecutionContext and a Schedule guarenteeing safety.

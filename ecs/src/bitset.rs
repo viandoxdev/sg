@@ -192,6 +192,12 @@ impl<K: Eq + Hash> BitsetMapping<K> {
     }
 }
 
+impl<K: Eq + Hash> Default for BitsetMapping<K> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub trait BitsetBuilder<'a> {
     type Key;
     type Output;

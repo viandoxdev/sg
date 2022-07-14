@@ -1,23 +1,14 @@
 use std::{
     any::{Any, TypeId},
     collections::{HashMap, HashSet},
-    error::Error,
-    hash::Hash,
-    marker::PhantomPinned,
-    ops::Deref,
-    sync::{atomic::AtomicU32, Arc},
-    thread::JoinHandle,
+    sync::Arc,
 };
 
-use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard};
-use slotmap::{DefaultKey, SlotMap};
+use slotmap::{SecondaryMap, SlotMap};
 
 use crate::{
-    bitset::{BitsetBuilder, BorrowBitset, BorrowBitsetBuilder, BorrowBitsetMapping},
-    borrows::{BorrowGuard, Borrows},
-    query::{Query, QueryIterBundle},
-    system::{IntoSystem, RequirementsMappings, System, SystemId},
-    thread_pool::{Job, ThreadPool},
+    system::{IntoSystem, RequirementsMappings, System},
+    thread_pool::{Job, ThreadPool, Wait},
     World,
 };
 
@@ -34,10 +25,9 @@ unsafe impl<'a> Sync for ExecutionContext<'a> {}
 
 struct ExecutorJob {
     steps: Vec<Step>,
-    waits: ReadOnly<Vec<Wait>>,
-    // TODO: remove 'static, as the context isn't static at all, but I can't have the lifetime on
-    // the struct.
-    context: ExecutionContext<'static>,
+    waits: Arc<Vec<Wait>>,
+    // TODO: remove 'static
+    context: Arc<ExecutionContext<'static>>,
 }
 
 impl Job for ExecutorJob {
@@ -45,27 +35,32 @@ impl Job for ExecutorJob {
         for step in self.steps {
             match step {
                 Step::Wait(index) => {
-                    self.waits.get()[index].wait();
+                    self.waits[index].wait();
                 }
                 Step::Notify(index) => {
-                    self.waits.get()[index].notify();
+                    self.waits[index].notify();
                 }
                 Step::Run(id) => {
-                    self.context
-                        .executor
-                        .get_system(id)
-                        .unwrap()
-                        .run(&self.context);
+                    let system = self.context.executor.get_system(id).unwrap();
+                    // SAFETY: Run Steps only exist in schedules, and schedules enforce no
+                    // aliasing.
+                    unsafe {
+                        system.run(&self.context);
+                    }
                 }
             }
         }
     }
 }
 
+slotmap::new_key_type! {
+    pub struct SystemId;
+}
+
 /// A struct holding systems and resources
 pub struct Executor {
     resources: HashMap<TypeId, Box<dyn Any>>,
-    systems: HashMap<SystemId, System>,
+    systems: SlotMap<SystemId, System>,
     mappings: RequirementsMappings,
     thread_pool: ThreadPool<ExecutorJob>,
 }
@@ -74,7 +69,7 @@ impl Executor {
     pub fn new() -> Self {
         Self {
             resources: HashMap::new(),
-            systems: HashMap::new(),
+            systems: SlotMap::with_key(),
             mappings: RequirementsMappings::new(),
             thread_pool: ThreadPool::new(),
         }
@@ -90,25 +85,28 @@ impl Executor {
         self.resources.insert(res.type_id(), Box::new(res));
     }
 
-    pub fn get_resource<T: 'static>(&self) -> Option<&T> {
+    pub fn get_resource<T: Any>(&self) -> Option<&T> {
         self.resources
             .get(&TypeId::of::<T>())
-            .map(|boxed| boxed.downcast_ref::<T>())
-            .flatten()
+            .and_then(|boxed| boxed.downcast_ref::<T>())
     }
     /// Get a mutable reference to a resource without any checks for aliasing.
-    pub unsafe fn get_resource_mut_unchecked<T: 'static>(&self) -> Option<&mut T> {
+    ///
+    /// # Safety
+    ///
+    /// This bypasses rust aliasing checks, and is UB if the resource is already borrowed somewhere
+    /// else.
+    pub unsafe fn get_resource_mut_unchecked<T: Any>(&self) -> Option<&mut T> {
+        #[allow(clippy::cast_ref_to_mut)]
         let s = &mut *(self as *const Self as *mut Self);
         s.resources
             .get_mut(&TypeId::of::<T>())
-            .map(|boxed| boxed.downcast_mut::<T>())
-            .flatten()
+            .and_then(|boxed| boxed.downcast_mut::<T>())
     }
-    pub fn get_resource_mut<T: 'static>(&mut self) -> Option<&mut T> {
+    pub fn get_resource_mut<T: Any>(&mut self) -> Option<&mut T> {
         self.resources
             .get_mut(&TypeId::of::<T>())
-            .map(|boxed| boxed.downcast_mut::<T>())
-            .flatten()
+            .and_then(|boxed| boxed.downcast_mut::<T>())
     }
     /// Get a scheduler used to build a schedule
     pub fn schedule(&mut self) -> Scheduler {
@@ -117,34 +115,32 @@ impl Executor {
             systems: Vec::new(),
         }
     }
-
-    pub fn has_system(&self, sys: impl IntoSystem) -> bool {
-        self.systems.contains_key(&sys.id())
-    }
-    pub fn add_system(&mut self, sys: impl IntoSystem) {
-        self.systems
-            .insert(sys.id(), sys.into_system(&mut self.mappings));
+    fn add_system<A>(&mut self, sys: impl IntoSystem<A>) -> SystemId {
+        self.systems.insert(sys.into_system(&mut self.mappings))
     }
     fn get_system(&self, sys: SystemId) -> Option<&System> {
-        self.systems.get(&sys)
+        self.systems.get(sys)
     }
     /// Run a given schedule against this executor and a world
     pub fn execute(&mut self, schedule: &Schedule, world: &mut World) {
-        let context = ExecutionContext {
+        // Make sure we have enough workers
+        self.thread_pool.ensure_workers(schedule.threads.len());
+
+        let context = Arc::new(ExecutionContext {
             executor: self,
             world,
-        };
-
-        let waits = schedule.waits.clone();
-        for thread in &*schedule.threads.get() {
-            let job = ExecutorJob {
-                waits: waits.clone(),
-                context: unsafe { std::mem::transmute(context) },
+        });
+        let jobs = schedule.threads.iter().map(|thread| {
+            ExecutorJob {
+                waits: schedule.waits.clone(),
+                // Transmute lifetime into static
+                // TODO: remove that once I've found a better way
+                context: unsafe { std::mem::transmute(context.clone()) },
                 steps: thread.to_vec(),
-            };
+            }
+        });
 
-            self.thread_pool.run(job);
-        }
+        self.thread_pool.run_many(jobs).wait();
     }
 }
 
@@ -155,42 +151,37 @@ pub struct Scheduler<'a> {
 
 impl<'a> Scheduler<'a> {
     /// Add a system to the building schedule, a schedule can't contain the same system twice.
-    pub fn then(mut self, sys: impl IntoSystem) -> Self {
-        if !self.executor.has_system(sys) {
-            self.executor.add_system(sys)
-        }
-        if !self.systems.contains(&sys.id()) {
-            self.systems.push(sys.id());
-            self
-        } else {
-            panic!("Trying to add the same system to a schedule twice. This isn't currently supported.");
-        }
+    pub fn then<A>(mut self, sys: impl IntoSystem<A>) -> Self {
+        self.systems.push(self.executor.add_system(sys));
+        self
     }
-    /// /!\ Fairely expensive, and optimized, should only be called a few times
     /// Create a schedule from the added systems, the schedule is parallelized as much as possible
     /// while keeping the same behaviour as if the systems were run sequentially.
+    ///
+    /// # Note
+    ///
+    /// Fairely expensive, and unoptimized, should only be called a few times
     pub fn build(mut self) -> Schedule {
         if self.systems.is_empty() {
             return Schedule {
-                threads: ReadOnly::new(Vec::new()),
-                waits: ReadOnly::new(Vec::new()),
+                threads: Arc::new(Vec::new()),
+                waits: Arc::new(Vec::new()),
             };
         }
 
-        let mut deps: HashMap<SystemId, Vec<SystemId>> = HashMap::new();
-        let mut depths: HashMap<SystemId, u32> = HashMap::new();
+        let mut deps: SecondaryMap<SystemId, Vec<SystemId>> = SecondaryMap::new();
+        let mut depths: SecondaryMap<SystemId, u32> = SecondaryMap::new();
 
         // find dependencies between systems
         for (i, sys_id) in self.systems.iter().enumerate() {
             let sys = self.executor.get_system(*sys_id).unwrap();
+            deps.insert(*sys_id, Vec::new());
             // Loop over all the systems that come before
             for other_id in &self.systems[0..i] {
                 let other = self.executor.get_system(*other_id).unwrap();
 
                 if sys.depends_on(other) {
-                    deps.entry(*sys_id)
-                        .or_insert_with(|| Vec::new())
-                        .push(*other_id)
+                    deps.get_mut(*sys_id).unwrap().push(*other_id)
                 }
             }
         }
@@ -198,7 +189,7 @@ impl<'a> Scheduler<'a> {
         for sys_id in &self.systems {
             // Take the dependencies from the map (and convert to set)
             let mut sys_deps = deps
-                .remove(sys_id)
+                .remove(*sys_id)
                 .unwrap()
                 .into_iter()
                 .collect::<HashSet<_>>();
@@ -211,9 +202,9 @@ impl<'a> Scheduler<'a> {
                 fn recurse_dependencies(
                     id: SystemId,
                     set: &mut HashSet<SystemId>,
-                    deps: &HashMap<SystemId, Vec<SystemId>>,
+                    deps: &SecondaryMap<SystemId, Vec<SystemId>>,
                 ) {
-                    for dep in &deps[&id] {
+                    for dep in &deps[id] {
                         set.insert(id);
                         recurse_dependencies(*dep, set, deps);
                     }
@@ -232,7 +223,7 @@ impl<'a> Scheduler<'a> {
         while !self.systems.is_empty() {
             let sys_id = self.systems.remove(0);
 
-            let deps = &deps[&sys_id];
+            let deps = &deps[sys_id];
             if deps.is_empty() {
                 // System has no dependency, its depths is 0
                 depths.insert(sys_id, 0);
@@ -241,7 +232,7 @@ impl<'a> Scheduler<'a> {
                 // dependencies's depths are known.
                 let max_depth = deps
                     .iter()
-                    .map(|id| depths.get(&id).copied())
+                    .map(|id| depths.get(*id).copied())
                     .reduce(|acc, item| acc.and_then(|acc| item.map(|item| acc.max(item))))
                     .unwrap();
                 match max_depth {
@@ -266,7 +257,7 @@ impl<'a> Scheduler<'a> {
         let mut waits: Vec<Wait> = Vec::new();
 
         for sys in systems {
-            let deps = deps[&sys].iter().copied().collect::<HashSet<_>>();
+            let deps = deps[sys].iter().copied().collect::<HashSet<_>>();
 
             // If a suitable thread has been found
             let mut found = false;
@@ -326,7 +317,6 @@ impl<'a> Scheduler<'a> {
                         });
                         if let Some(index) = index {
                             let wait = {
-                                drop(dep_thread);
                                 // If there is already a wait before the run, then this is its
                                 // index
                                 let wait_index = step_index.saturating_sub(1);
@@ -357,43 +347,15 @@ impl<'a> Scheduler<'a> {
             }
         }
         Schedule {
-            threads: ReadOnly::new(threads),
-            waits: ReadOnly::new(waits),
+            threads: Arc::new(threads),
+            waits: Arc::new(waits),
         }
     }
 }
 
-struct ReadOnly<T> {
-    inner: Arc<RwLock<T>>,
-}
-// Manual impl of clone because derive doesn't understand that Arc<...> can be clone without ...
-// being.
-impl<T> Clone for ReadOnly<T> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-pub struct ReadOnlyGuard<'a, T>(RwLockReadGuard<'a, T>);
-
-impl<'a, T> Deref for ReadOnlyGuard<'a, T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        &*self.0
-    }
-}
-
-impl<T> ReadOnly<T> {
-    fn new(val: T) -> Self {
-        Self {
-            inner: Arc::new(RwLock::new(val)),
-        }
-    }
-
-    fn get(&self) -> ReadOnlyGuard<'_, T> {
-        ReadOnlyGuard(self.inner.read())
+impl Default for Executor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -407,98 +369,7 @@ enum Step {
     Wait(usize),
 }
 
-/// A barrier like syncronizations struct, waits for a ceratin number of notifications.
-pub struct Wait {
-    cond: Condvar,
-    count: Mutex<u32>,
-    limit: AtomicU32,
-}
-
-impl Wait {
-    /// Get the number of notifications before the wait ends
-    fn limit(&self) -> u32 {
-        self.limit.load(std::sync::atomic::Ordering::Relaxed)
-    }
-    /// Create a new Wait
-    fn new(limit: u32) -> Self {
-        Self {
-            cond: Condvar::new(),
-            count: Mutex::new(0),
-            limit: AtomicU32::new(limit),
-        }
-    }
-    /// Reset the counter
-    fn reset(&self) {
-        *self.count.lock() = 0;
-    }
-    /// Notify one
-    fn notify(&self) {
-        let mut count = self.count.lock();
-        *count += 1;
-        if *count == self.limit() {
-            *count = 0;
-            // release the lock
-            drop(count);
-
-            self.cond.notify_all();
-        }
-    }
-    /// Change the limit of the Wait
-    fn set_limit(&self, limit: u32) {
-        self.limit.store(limit, std::sync::atomic::Ordering::SeqCst);
-    }
-    /// Wait for limit notifications
-    fn wait(&self) {
-        self.cond.wait(&mut self.count.lock());
-    }
-}
-
 pub struct Schedule {
-    threads: ReadOnly<Vec<Vec<Step>>>,
-    waits: ReadOnly<Vec<Wait>>,
+    threads: Arc<Vec<Vec<Step>>>,
+    waits: Arc<Vec<Wait>>,
 }
-
-// UPDATE
-// systems: rust functions
-// traits:
-//  - IntoSystem<0..16> => fn(...) -> ?
-//     builds a System from a rust function, the function must have
-//     from 0 to 16 (extended with features) arguments. The arguments must implement
-//     SystemArgument.
-//  - SystemArgument => Entities<...>, Res/ResMut<...>
-//     represents a type that can be fetched from a Context
-// structs:
-//  - Entities<Q: Query> { ... }
-//     a wrapper (or type alias) over a guard of an iterator (or whatever is returned by the world
-//     when running a query).
-//  - Res<R> / ResMut<R> { ... }
-//     a wrapper around a reference to a resource, implements SystemArgument, only really here to
-//     be explicit about if an argument is supposed to be a resource or not (Is it really necessary
-//     when Entities exist ? since Entities is needed, can't we just assume that a reference is one
-//     to a resource ?)
-//  - System { requirements, pointer }
-//     represents a system, holds no type information, allows the  system to be run through
-//     the pointer, by calling run(context).
-//  - Context { world, executor }
-//     holds a reference to both to be able to fetch data from them (resources and entities)
-//  - SystemPointer { system, run }
-//     contains a fn pointer to the system's function, and a fn pointer to a function that
-//     fetches what the system needs from a Context and passes it to the system's function
-// concepts:
-//  - A schedule runs a set of systems in an order, while using paralelization as much as possible
-//    Only one schedule can be run at a time, many can be built and run against an executor and a
-//    world. More advanced logic (run conditions in bevy) like certain frequency and state are to
-//    be handled by the user (i.e every frame run the "render schedule", and 30 times a second run the
-//    "physics" schedule).
-//    For implmentation details: running a schedule is blocking and borrows the schedule and the
-//    world (being run by the executor so borrows it as well).
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn basic_system() {}
-}
-
-// TODO: Refractor most of this, currently lots of unsafe, annoying and outright dumb code that is
-// hard to read. The plan stays the same. Currently missing things: Blocking for the eentire
-// execution, maybe adding a notify at the end of all threads that notify a special wait ?

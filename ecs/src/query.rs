@@ -179,6 +179,12 @@ impl<Q: Query> QueryIterBundle<Q> {
     }
 }
 
+impl<Q: Query> Default for QueryIterBundle<Q> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<Q: Query> Iterator for QueryIterBundle<Q> {
     type Item = Q;
     fn next(&mut self) -> Option<Self::Item> {

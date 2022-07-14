@@ -15,6 +15,8 @@ pub struct World {
     location_map: LocationMap,
 }
 
+// This needs to move, a utils mod maybe ?
+
 trait VecExt<T> {
     unsafe fn get_mut_many_unchecked<const N: usize>(
         &mut self,
@@ -32,14 +34,16 @@ where
     ) -> [Option<&mut T>; N] {
         let mut res: MaybeUninit<[Option<&mut T>; N]> = MaybeUninit::uninit();
         let s = self as *mut Self;
-        for i in 0..N {
+        for (i, index) in indices.iter().enumerate().take(N) {
             (res.as_mut_ptr() as *mut Option<&mut T>)
                 .add(i)
-                .write((*s).get_mut(indices[i]));
+                .write((*s).get_mut(*index));
         }
         res.assume_init()
     }
     fn get_mut_many<const N: usize>(&mut self, indices: [usize; N]) -> [Option<&mut T>; N] {
+        // Its O(n²) but can definitely be unrolled, and/or vectorized by the compiler so it shouldn't matter
+        #[allow(clippy::needless_range_loop)]
         for i in 0..N {
             for j in 0..N {
                 if i != j && indices[i] == indices[j] {
@@ -52,6 +56,7 @@ where
 }
 
 impl World {
+    /// Hello World
     pub fn new() -> Self {
         Self {
             mapping: BitsetMapping::new(),
@@ -77,6 +82,7 @@ impl World {
         self.archetypes.push((ats, set));
         &mut self.archetypes[index].0
     }
+    /// Spawn an entity in the world
     pub fn spawn<T: IntoArchetype>(&mut self, entity: T) -> Entity {
         match self
             .archetypes
@@ -94,6 +100,7 @@ impl World {
             }
         }
     }
+    /// Spawn many entities in the world
     pub fn spawn_many<T: IntoArchetype>(
         &mut self,
         entities: impl IntoIterator<Item = T>,
@@ -118,11 +125,14 @@ impl World {
             }
         }
     }
+    /// Delete an entity from the world (calls drop), unlike take, this doesn't need to know the
+    /// type of the components of the entity.
     pub fn remove(&mut self, entity: Entity) -> Option<()> {
         let loc = self.location_map.remove_single(entity)?;
         self.archetypes[loc.archetype].0.remove(loc.entity);
         Some(())
     }
+    /// Like remove, for multiple entities
     pub fn remove_many(&mut self, entities: impl IntoIterator<Item = Entity>) -> Option<()> {
         let locs = self.location_map.remove(entities)?;
         for loc in locs {
@@ -130,10 +140,13 @@ impl World {
         }
         Some(())
     }
+    /// Take an entity away from the world, unlike remove, this returns the entity, but needs to
+    /// know the type of its components
     pub fn take<T: IntoArchetype>(&mut self, entity: Entity) -> Option<T> {
         let loc = self.location_map.remove_single(entity)?;
         Some(self.archetypes[loc.archetype].0.take(loc.entity))
     }
+    /// Like take, for multiple entities
     pub fn take_many<T: IntoArchetype>(
         &mut self,
         entities: impl IntoIterator<Item = Entity>,
@@ -145,6 +158,7 @@ impl World {
         }
         Some(res)
     }
+    /// Add a component to an entity, this is very slow (comparatively) and should be avoided
     pub fn add_component<T: IntoArchetype>(&mut self, entity: Entity, value: T) -> Option<()> {
         let loc = *self.location_map.get(entity)?;
         let archetype_bitset = self.archetypes[loc.archetype].1;
@@ -186,6 +200,7 @@ impl World {
 
         Some(())
     }
+    /// Take a component from an entity, this is very slow (comparatively) and should be avoided
     pub fn take_component<T: IntoArchetype>(&mut self, entity: Entity) -> Option<T> {
         let loc = *self.location_map.get(entity)?;
         let archetype_bitset = self.archetypes[loc.archetype].1;
@@ -240,13 +255,24 @@ impl World {
         }
         iter
     }
-    pub unsafe fn query_unchecked<Q: Query>(&self) -> QueryIterBundle<Q> {
+    /// Run a query on the world, without any borrow checking
+    ///
+    /// # Safety
+    ///
+    /// This should only be used when the query has been proven to not alias with any other
+    /// existing query.
+    pub(crate) unsafe fn query_unchecked<Q: Query>(&self) -> QueryIterBundle<Q> {
         let set = match Q::bitset(&self.mapping) {
             Some(set) => set,
             None => return QueryIterBundle::new(),
         };
         self.query_iter::<Q>(set)
     }
+    /// Query the world
+    ///
+    /// # Panics
+    ///
+    /// This panics if another existing query collide with this one
     pub fn query<Q: Query>(&self) -> BorrowGuard<'_, QueryIterBundle<Q>> {
         let set = match Q::bitset(&self.mapping) {
             Some(set) => set,
@@ -255,10 +281,17 @@ impl World {
         let iter = self.query_iter::<Q>(set);
         self.borrows.borrow(set, iter)
     }
+    /// Query a single entity from the world
     pub fn query_single<Q: Query>(&self) -> Option<BorrowGuard<'_, Q>> {
         let set = Q::bitset(&self.mapping)?;
         let mut iter = self.query_iter::<Q>(set);
         iter.next().map(|q| self.borrows.borrow(set, q))
+    }
+}
+
+impl Default for World {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

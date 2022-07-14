@@ -363,7 +363,7 @@ impl Drop for ArchetypeStorage {
 
 /// Get the drop_in_place implementation for any type T
 unsafe fn get_drop<T: 'static>() -> DropInPlace {
-    return std::mem::transmute(std::ptr::drop_in_place::<T> as unsafe fn(*mut T));
+    std::mem::transmute(std::ptr::drop_in_place::<T> as unsafe fn(*mut T))
 }
 
 pub trait IntoArchetype {
