@@ -1,11 +1,9 @@
-use anyhow::Result;
 use glam::{Mat4, Quat, Vec3};
 use uuid::Uuid;
 
 use crate::systems::graphics::{
     mesh_manager::MeshHandle,
-    texture_manager::{SingleValue, TextureHandle, TextureSet},
-    GraphicContext, Light, Material,
+    Light, Material,
 };
 
 #[derive(Debug, Clone, Copy)]

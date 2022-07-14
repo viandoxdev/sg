@@ -14,22 +14,12 @@ use super::{
     GraphicContext,
 };
 
+#[derive(Default)]
 struct ChannelIndex {
     red: Option<usize>,
     green: Option<usize>,
     blue: Option<usize>,
     alpha: Option<usize>,
-}
-
-impl Default for ChannelIndex {
-    fn default() -> Self {
-        ChannelIndex {
-            red: None,
-            green: None,
-            blue: None,
-            alpha: None,
-        }
-    }
 }
 
 trait FormatExt {
@@ -195,7 +185,7 @@ fn load_image(gfx: &mut GraphicContext, image: &mut ImageData, srgb: bool) -> wg
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        &data,
+        data,
         wgpu::ImageDataLayout {
             offset: 0,
             bytes_per_row,
@@ -207,7 +197,10 @@ fn load_image(gfx: &mut GraphicContext, image: &mut ImageData, srgb: bool) -> wg
     tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-pub fn open<P: AsRef<Path>>(path: P, gfx: &mut GraphicContext) -> Result<Vec<(GraphicsComponent, TransformsComponent)>> {
+pub fn open<P: AsRef<Path>>(
+    path: P,
+    gfx: &mut GraphicContext,
+) -> Result<Vec<(GraphicsComponent, TransformsComponent)>> {
     let (doc, buffers, mut doc_images) = gltf::import(path)?;
 
     let mut mesh_handles = vec![vec![]; doc.meshes().count()];
@@ -220,7 +213,7 @@ pub fn open<P: AsRef<Path>>(path: P, gfx: &mut GraphicContext) -> Result<Vec<(Gr
     for mesh in doc.meshes() {
         for primitive in mesh.primitives() {
             let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-            let mut positions = reader
+            let positions = reader
                 .read_positions()
                 .context("Couldn't read vertex positions")?;
             let mut normals = reader.read_normals().context("Couldn't read normals")?;
@@ -247,7 +240,7 @@ pub fn open<P: AsRef<Path>>(path: P, gfx: &mut GraphicContext) -> Result<Vec<(Gr
                 m_indices.push([i1, i3, i2]); // swap to invert winding
             }
 
-            while let Some(position) = positions.next() {
+            for position in positions {
                 let position = Vec3::from(position);
                 let normal = Vec3::from(normals.next().context("No normal given for vertex")?);
                 let tex_coords = Vec2::from(

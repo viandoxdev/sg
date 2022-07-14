@@ -3,11 +3,11 @@
 #![allow(incomplete_features)]
 #![allow(dead_code)]
 
-use ecs::{World, Executor};
-use glam::{Quat, Vec3, Vec4};
-use systems::graphics::mesh_manager::{Mesh, Primitives};
-use systems::graphics::texture_manager::SingleValue;
-use systems::graphics::{gltf, GraphicContext, Light, Material, PointLight, lights_system, graphic_system};
+use ecs::{Executor, World};
+use glam::{Vec3, Vec4};
+use systems::graphics::{
+    gltf, graphic_system, lights_system, GraphicContext, Light, PointLight,
+};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
@@ -85,20 +85,19 @@ async fn run(mut world: World, mut executor: Executor) {
     ];
     let lc = Vec4::splat(27.0);
     for pos in pos {
-        world.spawn((
-            LightComponent::new(Light::Point(PointLight::new(pos, lc)))
-        ,));
+        world.spawn((LightComponent::new(Light::Point(PointLight::new(pos, lc))),));
     }
 
-    let mut count = 0f64;
-    let schedule = executor.schedule()
+    //let mut count = 0f64;
+    let schedule = executor
+        .schedule()
         .then(lights_system)
         .then(graphic_system)
         .build();
 
     event_loop.run(move |event, _, control_flow| match event {
         Event::RedrawRequested(id) if id == window.id() => {
-            count += 1.0;
+            //count += 1.0;
 
             executor.execute(&schedule, &mut world);
 

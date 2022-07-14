@@ -199,10 +199,12 @@ pub fn lights_system(ctx: &mut GraphicContext, lights: Entities<&LightComponent>
             ctx.shading_pipeline.rebuild(&ctx.device); // very expensive
         };
     }
-
 }
 
-pub fn graphic_system(ctx: &mut GraphicContext, renderables: Entities<(&GraphicsComponent, Option<&TransformsComponent>)>) {
+pub fn graphic_system(
+    ctx: &mut GraphicContext,
+    renderables: Entities<(&GraphicsComponent, Option<&TransformsComponent>)>,
+) {
     ctx.feedback = Ok(());
 
     let output = ctx.surface.get_current_texture();
@@ -211,11 +213,11 @@ pub fn graphic_system(ctx: &mut GraphicContext, renderables: Entities<(&Graphics
             let view = output
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
-            let mut encoder =
-                ctx.device
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("gfx render encoder"),
-                    });
+            let mut encoder = ctx
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("gfx render encoder"),
+                });
 
             let mut render_pass =
                 encoder.begin_render_pass(&geometry_renderpass_desc!(ctx.g_buffer));
