@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use anyhow::Result;
-use ecs::{filter_components, System};
+use ecs::Entities;
 use glam::{Vec3, Vec4};
 use uuid::Uuid;
 use winit::window::Window;
@@ -105,7 +105,7 @@ impl Material {
         metallic: f32,
         roughness: f32,
         ao: Option<TextureHandle>,
-        gfx: &mut GraphicSystem,
+        gfx: &mut GraphicContext,
     ) -> Result<Self> {
         let metallic = gfx.texture_manager.get_or_add_single_value_texture(
             &gfx.device,
@@ -125,7 +125,7 @@ impl Material {
         metallic: TextureHandle,
         roughness: TextureHandle,
         ao: Option<TextureHandle>,
-        gfx: &mut GraphicSystem,
+        gfx: &mut GraphicContext,
     ) -> Result<Self> {
         let set = gfx.texture_manager.add_set();
         let normal_map = normal_map.unwrap_or_else(|| {
@@ -151,7 +151,7 @@ impl Material {
     }
 }
 
-pub struct GraphicSystem {
+pub struct GraphicContext {
     pub size: winit::dpi::PhysicalSize<u32>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -167,112 +167,107 @@ pub struct GraphicSystem {
     pub texture_manager: TextureManager,
 }
 
-impl System for GraphicSystem {
-    fn name() -> &'static str {
-        "GraphicSystem"
+pub fn lights_system(ctx: &mut GraphicContext, lights: Entities<&LightComponent>) {
+    let lights = lights.collect::<Vec<_>>();
+    let mut lights_changed = lights.len() != ctx.lights_cache.len();
+    for light in &lights {
+        let id = &light.id;
+        if !ctx.lights_cache.contains(id) {
+            lights_changed = true;
+            break;
+        }
     }
-    fn pass(&mut self, mut entities: ecs::EntitiesBorrow) {
-        let renderables = filter_components!(entities
-            => GraphicsComponent;
-            ? TransformsComponent;
-        );
-        let lights = filter_components!(entities => LightComponent);
 
-        let mut lights_changed = lights.len() != self.lights_cache.len();
-        for id in lights.keys() {
-            if !self.lights_cache.contains(id) {
-                lights_changed = true;
-                break;
-            }
-        }
+    if lights_changed {
+        // update the cache
+        ctx.lights_cache.clear();
+        ctx.lights_cache.extend(lights.iter().map(|l| l.id));
+        // update the g_buffer
+        let lights = lights.into_iter().map(|c| c.light).collect::<Vec<_>>();
+        // TODO make this take an impl IntoIterator
+        if let Err(overflow) = ctx.g_buffer.update_lights(&ctx.device, &lights) {
+            let current_max = ctx
+                .shading_pipeline
+                .shader
+                .get_integer("LIGHTS_MAX")
+                .unwrap() as u32;
+            let new_max = (current_max * 2).max(current_max + overflow);
+            ctx.shading_pipeline
+                .shader
+                .set_integer("LIGHTS_MAX", new_max as i64);
+            log::debug!("Max lights reached increasing limit, rebuilding shader and pipeline");
+            ctx.shading_pipeline.rebuild(&ctx.device); // very expensive
+        };
+    }
 
-        if lights_changed {
-            // update the cache
-            self.lights_cache.clear();
-            self.lights_cache.extend(lights.keys());
-            // update the g_buffer
-            let lights = lights.into_iter().map(|(_, c)| c.light).collect::<Vec<_>>();
-            if let Err(overflow) = self.g_buffer.update_lights(&self.device, &lights) {
-                let current_max = self
-                    .shading_pipeline
-                    .shader
-                    .get_integer("LIGHTS_MAX")
-                    .unwrap() as u32;
-                let new_max = (current_max * 2).max(current_max + overflow);
-                self.shading_pipeline
-                    .shader
-                    .set_integer("LIGHTS_MAX", new_max as i64);
-                log::debug!("Max lights reached increasing limit, rebuilding shader and pipeline");
-                self.shading_pipeline.rebuild(&self.device); // very expensive
-            };
-        }
+}
 
-        self.feedback = Ok(());
+pub fn graphic_system(ctx: &mut GraphicContext, renderables: Entities<(&GraphicsComponent, Option<&TransformsComponent>)>) {
+    ctx.feedback = Ok(());
 
-        let output = self.surface.get_current_texture();
-        match output {
-            Ok(output) => {
-                let view = output
-                    .texture
-                    .create_view(&wgpu::TextureViewDescriptor::default());
-                let mut encoder =
-                    self.device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("gfx render encoder"),
-                        });
+    let output = ctx.surface.get_current_texture();
+    match output {
+        Ok(output) => {
+            let view = output
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            let mut encoder =
+                ctx.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("gfx render encoder"),
+                    });
 
-                let mut render_pass =
-                    encoder.begin_render_pass(&geometry_renderpass_desc!(self.g_buffer));
-                render_pass.set_pipeline(&self.geometry_pipeline.pipeline);
+            let mut render_pass =
+                encoder.begin_render_pass(&geometry_renderpass_desc!(ctx.g_buffer));
+            render_pass.set_pipeline(&ctx.geometry_pipeline.pipeline);
 
-                self.camera.update(&self.device, &self.queue);
+            ctx.camera.update(&ctx.device, &ctx.queue);
 
-                for (id, (gfx, tsm)) in renderables {
-                    let tsm = tsm.cloned().unwrap_or_default();
-                    let mesh = self
-                        .mesh_manager
-                        .get(gfx.mesh)
-                        .unwrap_or_else(|| panic!("Unknown mesh on {id}"));
+            for (gfx, tsm) in renderables {
+                let tsm = tsm.cloned().unwrap_or_default();
+                let mesh = ctx
+                    .mesh_manager
+                    .get(gfx.mesh)
+                    .unwrap_or_else(|| panic!("Unknown mesh"));
 
-                    let tex_bindgroup = self
-                        .texture_manager
-                        .get_bindgroup(&self.device, gfx.material.textures);
-                    let cam_bindgroup = self.camera.get_bind_group(&self.device);
+                let tex_bindgroup = ctx
+                    .texture_manager
+                    .get_bindgroup(&ctx.device, gfx.material.textures);
+                let cam_bindgroup = ctx.camera.get_bind_group(&ctx.device);
 
-                    render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                    render_pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-                    render_pass.set_bind_group(0, tex_bindgroup, &[]);
-                    render_pass.set_bind_group(1, cam_bindgroup, &[]);
-                    render_pass.set_push_constants(
-                        wgpu::ShaderStages::VERTEX,
-                        0,
-                        bytemuck::cast_slice(&[tsm.mat(), tsm.mat().inverse().transpose()]),
-                    );
-                    render_pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
-                }
-
-                drop(render_pass);
-                let mut render_pass = encoder.begin_render_pass(&shading_renderpass_desc!(&view));
-                let cam_bindgroup = self.camera.get_bind_group(&self.device);
-
-                render_pass.set_pipeline(&self.shading_pipeline.pipeline);
-                render_pass.set_bind_group(0, &self.g_buffer.bindgroup, &[]);
+                render_pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                render_pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.set_bind_group(0, tex_bindgroup, &[]);
                 render_pass.set_bind_group(1, cam_bindgroup, &[]);
-                render_pass.draw(0..3, 0..1);
-
-                drop(render_pass);
-
-                self.queue.submit(std::iter::once(encoder.finish()));
-                output.present();
+                render_pass.set_push_constants(
+                    wgpu::ShaderStages::VERTEX,
+                    0,
+                    bytemuck::cast_slice(&[tsm.mat(), tsm.mat().inverse().transpose()]),
+                );
+                render_pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
             }
-            Err(error) => {
-                self.feedback = Err(error);
-            }
+
+            drop(render_pass);
+            let mut render_pass = encoder.begin_render_pass(&shading_renderpass_desc!(&view));
+            let cam_bindgroup = ctx.camera.get_bind_group(&ctx.device);
+
+            render_pass.set_pipeline(&ctx.shading_pipeline.pipeline);
+            render_pass.set_bind_group(0, &ctx.g_buffer.bindgroup, &[]);
+            render_pass.set_bind_group(1, cam_bindgroup, &[]);
+            render_pass.draw(0..3, 0..1);
+
+            drop(render_pass);
+
+            ctx.queue.submit(std::iter::once(encoder.finish()));
+            output.present();
+        }
+        Err(error) => {
+            ctx.feedback = Err(error);
         }
     }
 }
 
-impl GraphicSystem {
+impl GraphicContext {
     pub async fn new(window: &Window) -> Self {
         let size = window.inner_size();
 

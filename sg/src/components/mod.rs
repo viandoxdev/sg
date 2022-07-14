@@ -1,11 +1,11 @@
 use anyhow::Result;
-use ecs::Component;
 use glam::{Mat4, Quat, Vec3};
+use uuid::Uuid;
 
 use crate::systems::graphics::{
     mesh_manager::MeshHandle,
     texture_manager::{SingleValue, TextureHandle, TextureSet},
-    GraphicSystem, Light, Material,
+    GraphicContext, Light, Material,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -19,10 +19,22 @@ pub struct GraphicsComponent {
     pub(crate) mesh: MeshHandle,
     pub(crate) material: Material,
 }
+
 #[derive(Clone, Copy)]
 pub struct LightComponent {
     pub light: Light,
+    pub id: Uuid,
 }
+
+impl LightComponent {
+    pub fn new(light: Light) -> Self {
+        Self {
+            light,
+            id: Uuid::new_v4(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct TransformsComponent {
     translate: Vec3,
@@ -67,8 +79,3 @@ impl TransformsComponent {
         self.matrix
     }
 }
-
-impl Component for PositionComponent {}
-impl Component for TransformsComponent {}
-impl Component for GraphicsComponent {}
-impl Component for LightComponent {}

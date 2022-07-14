@@ -3,37 +3,31 @@
 #![allow(incomplete_features)]
 #![allow(dead_code)]
 
+use ecs::{World, Executor};
 use glam::{Quat, Vec3, Vec4};
 use systems::graphics::mesh_manager::{Mesh, Primitives};
 use systems::graphics::texture_manager::SingleValue;
-use systems::graphics::{gltf, GraphicSystem, Light, Material, PointLight};
-use systems::{CenterSystem, GravitySystem, LoggingSystem};
+use systems::graphics::{gltf, GraphicContext, Light, Material, PointLight, lights_system, graphic_system};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 
-use components::{GraphicsComponent, LightComponent, PositionComponent, TransformsComponent};
-use ecs::{owned_entity, ECS};
+use components::LightComponent;
 
 mod chess;
 pub mod components;
 pub mod systems;
 
-async fn run(mut ecs: ECS) {
+async fn run(mut world: World, mut executor: Executor) {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
 
-    let mut gfx = GraphicSystem::new(&window).await;
+    let mut gfx = GraphicContext::new(&window).await;
     gfx.camera.set_position(Vec3::new(0.0, 7.0, -8.0));
     let entities = gltf::open("model.glb", &mut gfx).expect("Error");
-    ecs.register_system(gfx, "graphics");
-    ecs.register_component::<TransformsComponent>();
-    ecs.register_component::<GraphicsComponent>();
-    ecs.register_component::<LightComponent>();
 
-    for entity in entities {
-        ecs.add_entity(entity);
-    }
+    world.spawn_many(entities);
+    executor.add_resource(gfx);
 
     //let entity;
 
@@ -91,21 +85,22 @@ async fn run(mut ecs: ECS) {
     ];
     let lc = Vec4::splat(27.0);
     for pos in pos {
-        let light = ecs.new_entity();
-        ecs.add_component(
-            light,
-            LightComponent {
-                light: Light::Point(PointLight::new(pos, lc)),
-            },
-        );
+        world.spawn((
+            LightComponent::new(Light::Point(PointLight::new(pos, lc)))
+        ,));
     }
 
     let mut count = 0f64;
+    let schedule = executor.schedule()
+        .then(lights_system)
+        .then(graphic_system)
+        .build();
 
     event_loop.run(move |event, _, control_flow| match event {
         Event::RedrawRequested(id) if id == window.id() => {
             count += 1.0;
-            ecs.run_systems("graphics");
+
+            executor.execute(&schedule, &mut world);
 
             //ecs.get_component_mut::<TransformsComponent>(entity)
             //    .unwrap()
@@ -113,7 +108,7 @@ async fn run(mut ecs: ECS) {
             //ecs.get_component_mut::<TransformsComponent>(entity)
             //    .unwrap()
             //    .set_translation(Vec3::new(0.0, (count / 100.0).cos() as f32 / 2.0, 2.0));
-            let gfx = ecs.get_system_mut::<GraphicSystem>().unwrap();
+            let gfx = executor.get_resource_mut::<GraphicContext>().unwrap();
 
             match gfx.feedback() {
                 Ok(_) => {}
@@ -130,12 +125,12 @@ async fn run(mut ecs: ECS) {
             ref event,
         } if window_id == window.id() => match event {
             WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
-            WindowEvent::Resized(physical_size) => ecs
-                .get_system_mut::<GraphicSystem>()
+            WindowEvent::Resized(physical_size) => executor
+                .get_resource_mut::<GraphicContext>()
                 .unwrap()
                 .resize(*physical_size),
-            WindowEvent::ScaleFactorChanged { new_inner_size, .. } => ecs
-                .get_system_mut::<GraphicSystem>()
+            WindowEvent::ScaleFactorChanged { new_inner_size, .. } => executor
+                .get_resource_mut::<GraphicContext>()
                 .unwrap()
                 .resize(**new_inner_size),
             _ => {}
@@ -154,30 +149,7 @@ fn main() {
     //client.request_game("127.0.0.1:50001").unwrap();
     //thread::sleep(Duration::from_secs(2));
 
-    let mut ecs = ECS::new();
-    ecs.register_component::<PositionComponent>();
-    ecs.register_system(GravitySystem { g: 4.0 }, "gravity");
-    ecs.register_system(
-        CenterSystem {
-            res: PositionComponent {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        },
-        "gravity",
-    );
-    ecs.register_system(LoggingSystem {}, "log");
-
-    ecs.add_entity(owned_entity! {
-        PositionComponent {
-            x: 0.0, y: 0.0, z: 1.0
-        }
-    });
-
-    ecs.run_systems("log");
-    ecs.run_systems("gravity");
-    ecs.run_systems("log");
-
-    pollster::block_on(run(ecs));
+    let world = World::new();
+    let executor = Executor::new();
+    pollster::block_on(run(world, executor));
 }
