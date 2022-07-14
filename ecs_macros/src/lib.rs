@@ -2,251 +2,275 @@
 #![feature(proc_macro_diagnostic)]
 #![feature(proc_macro_span_shrink)]
 
-use proc_macro::TokenStream;
+use proc_macro2::{Ident, Span};
 use quote::quote;
-use syn::spanned::Spanned;
-use syn::{parse_macro_input, FnArg, ItemFn, PatType};
+use syn::{parse::Parse, parse_macro_input, Index, LitInt};
 
-/// See if ty is of form Vec<...> and return Some(...) if it is.
-fn parse_vec(ty: syn::Type) -> Option<syn::Type> {
-    if let syn::Type::Path(syn::TypePath {
-        path: syn::Path { segments, .. },
-        ..
-    }) = ty
-    {
-        if let syn::PathSegment {
-            ident,
-            arguments:
-                syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments { args, .. }),
-        } = segments.into_iter().last()?
-        {
-            if ident == "Vec" {
-                if let syn::GenericArgument::Type(out) = args.into_iter().next()? {
-                    return Some(out);
-                }
-            }
-        }
-    }
-    None
+struct Count {
+    count: u64,
 }
 
-/// See if ty is of form Vec<...> and return Some(...) if it is.
-fn parse_hashmap(ty: syn::Type) -> Option<(syn::Type, syn::Type)> {
-    if let syn::Type::Path(syn::TypePath {
-        path: syn::Path { segments, .. },
-        ..
-    }) = ty
-    {
-        if let syn::PathSegment {
-            ident,
-            arguments:
-                syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments { args, .. }),
-        } = segments.into_iter().last()?
-        {
-            if ident == "HashMap" {
-                let mut args = args.into_iter().filter_map(|arg| match arg {
-                    syn::GenericArgument::Type(ty) => Some(ty),
-                    _ => None,
-                });
-                return Some((args.next()?, args.next()?));
-            }
-        }
-    }
-    None
-}
-
-/// See if ty is of form Option<...> and return Some(...) if it is.
-fn parse_option(ty: syn::Type) -> Option<syn::Type> {
-    if let syn::Type::Path(syn::TypePath {
-        path: syn::Path { segments, .. },
-        ..
-    }) = ty
-    {
-        if let syn::PathSegment {
-            ident,
-            arguments:
-                syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments { args, .. }),
-        } = segments.into_iter().last()?
-        {
-            if ident == "Option" {
-                if let syn::GenericArgument::Type(out) = args.into_iter().next()? {
-                    return Some(out);
-                }
-            }
-        }
-    }
-    None
-}
-
-fn get_generics(ty: syn::Type) -> Vec<syn::Type> {
-    if let syn::Type::Path(syn::TypePath {
-        path: syn::Path { segments, .. },
-        ..
-    }) = ty
-    {
-        if let Some(syn::PathSegment {
-            ident,
-            arguments:
-                syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments { args, .. }),
-        }) = segments.into_iter().last()
-        {
-            if ident == "Option" {
-                return args
-                    .into_iter()
-                    .filter_map(|arg| match arg {
-                        syn::GenericArgument::Type(ty) => Some(ty),
-                        _ => None,
-                    })
-                    .collect();
-            }
-        }
-    }
-    vec![]
-}
-
-/// Split type to vec:
-/// A -> vec![A]
-/// (A) -> vec![A]
-/// (A, B, ...) -> vec![A, B, ...]
-fn split_type(ty: syn::Type) -> Vec<syn::Type> {
-    if let syn::Type::Paren(syn::TypeParen { elem, .. }) = ty {
-        vec![*elem]
-    } else if let syn::Type::Tuple(syn::TypeTuple { elems, .. }) = ty {
-        elems.into_iter().collect::<Vec<_>>()
-    } else {
-        vec![ty]
-    }
-}
-
-#[proc_macro_attribute]
-pub fn system_pass(_: TokenStream, item: TokenStream) -> TokenStream {
-    let empty = quote!().into();
-    let fnc: ItemFn = parse_macro_input!(item);
-    let name = fnc.sig.ident.clone();
-    let name_str = name.to_string();
-    let mut args = fnc.sig.inputs.iter();
-    let first_arg = args.next();
-
-    // check if first arg is &mut self
-    if let Some(FnArg::Receiver(syn::Receiver {
-        reference: Some((syn::token::And { .. }, None)),
-        mutability: Some(syn::token::Mut { .. }),
-        ..
-    })) = first_arg
-    {
-    } else {
-        let span = first_arg.map_or_else(|| fnc.span().unwrap(), |a| a.span().unwrap());
-        span.error("First argument should be &mut self").emit();
-        return empty;
-    }
-
-    if &name_str == "pass" {
-        // sig should be fn pass(&mut self, ... components) -> ()
-        let mut comps = Vec::<(syn::Pat, syn::Type)>::new();
-        let mut comps_opt = Vec::<(syn::Pat, syn::Type)>::new();
-
-        for arg in args {
-            if let FnArg::Typed(PatType { pat, ty, .. }) = arg {
-                match parse_option(*ty.to_owned()) {
-                    Some(ty) => comps_opt.push((*pat.to_owned(), ty)),
-                    None => comps.push((*pat.to_owned(), *ty.to_owned())),
-                }
-            }
-        }
-
-        let reqs = comps
-            .iter()
-            .map(|(_, ty)| {
-                quote! {
-                    .add::<#ty>()
-                }
+impl Parse for Count {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let lookahead = input.lookahead1();
+        if lookahead.peek(LitInt) {
+            let lit: LitInt = input.parse()?;
+            Ok(Self {
+                count: lit.base10_parse::<u64>()?,
             })
-            .chain(comps_opt.iter().map(|(_, ty)| {
-                quote! {
-                    .add_optional::<#ty>()
-                }
-            }));
-        let lets = comps.iter().map(|(pat, ty)| quote!{
-            let #pat = ecs::downcast_component::<#ty>(&mut __entity).expect("Missing requried component on filtered entity.");
-        }).chain(comps_opt.iter().map(|(pat, ty)| quote!{
-            let #pat = ecs::downcast_component::<#ty>(&mut __entity);
-        }));
-        let block = *fnc.block;
+        } else {
+            Err(lookahead.error())
+        }
+    }
+}
 
-        return quote! {
-            fn pass(&mut self, mut __entities: ecs::EntitiesBorrow) {
-                let __reqs = ecs::SystemRequirements::new()
-                #(#reqs)*;
-                let __entities = __reqs.filter(&mut __entities);
-                for (__id, mut __entity) in __entities {
-                    #(#lets)*
-                    #block;
+fn n_to_type(mut n: u64, total: u64) -> Ident {
+    const LETTERS: [char; 26] = [
+        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R',
+        'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+    ];
+    const NUMBERS: [char; 10] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+    let len = if total < 26 {
+        1
+    } else {
+        2 + (total as f32 / 26.0).log10() as u64
+    };
+    let lt = LETTERS[n as usize % 26];
+    let mut res = String::new();
+    n /= 26;
+    for _ in 1..len {
+        let r = n % 10;
+        res.push(NUMBERS[r as usize]);
+        n /= 10;
+    }
+    res = res.chars().rev().collect();
+    res.insert(0, lt);
+    Ident::new(&res, Span::call_site())
+}
+
+#[proc_macro]
+pub fn impl_archetype(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let count = parse_macro_input!(input as Count).count;
+    let output = {
+        let impls = (0..=count).map(|count| {
+            // eg "2"
+            let cap = count as usize;
+            // eg "A", "B"
+            let types = (0..count).map(|v| n_to_type(v, count));
+            // eg "0", "1"
+            let indices = (0..count).map(|v| Index::from(v as usize));
+            // eg "(A, B,)"
+            let tuple = if count > 0{
+                let types = types.clone();
+                quote!((#(#types),*,))
+            } else {
+                quote!(())
+            };
+            // eg "A: 'static, B: 'static"
+            let generics = if count > 0 {
+                let types = types.clone();
+                quote!(<#(#types: 'static),*>)
+            } else {
+                quote!()
+            };
+            let matches = {
+                let types = types.clone();
+                quote!(#(&& archetype.has::<#types>())*)
+            };
+            let writes = {
+                let types = types.clone();
+                let indices = indices.clone();
+                quote!{#(
+                    std::ptr::write(dst.add(archetype.offset::<#types>()) as *mut #types, self.#indices);
+                )*}
+            };
+            let reads = {
+                let types = types.clone();
+                let indices = indices.clone();
+                quote!{#(
+                    std::ptr::copy(src.add(archetype.offset::<#types>()) as *const #types, &mut (*value.as_mut_ptr()).#indices as *mut #types, 1);
+                )*}
+            };
+            let typeids = {
+                let types = types.clone();
+                quote!{#(
+                    TypeId::of::<#types>()
+                ),*}
+            };
+            let adds = {
+                let types = types.clone();
+                quote!(#(.add::<#types>())*)
+            };
+            quote!{
+                impl #generics IntoArchetype for #tuple {
+                    fn into_archetype() -> Archetype {
+                        let layout = Layout::new::<#tuple>();
+                        let mut info = HashMap::with_capacity(#cap);
+                        unsafe {
+                            let val = MaybeUninit::<#tuple>::uninit();
+                            #(
+                                info.insert(TypeId::of::<#types>(), ComponentType {
+                                    offset: std::ptr::addr_of!((*val.as_ptr()).#indices) as usize - val.as_ptr() as usize,
+                                    drop: match std::mem::needs_drop::<#types>() {
+                                        true => Some(get_drop::<#types>()),
+                                        false => None,
+                                    },
+                                    size: std::mem::size_of::<#types>(),
+                                    alignment: std::mem::align_of::<#types>(),
+                                });
+                            )*
+                        }
+
+                        Archetype {
+                            info,
+                            layout,
+                        }
+                    }
+                    fn match_archetype(archetype: &Archetype) -> bool {
+                        if archetype.info.len() == #cap {
+                            Self::archetype_contains(archetype)
+                        } else {
+                            false
+                        }
+                    }
+                    fn archetype_contains(archetype: &Archetype) -> bool {
+                        true #matches
+                    }
+                    fn bitset(mapping: &ArchetypeBitsetMapping) -> Option<ArchetypeBitset> {
+                        ArchetypeBitsetBuilder::start(mapping)
+                            #adds
+                            .build()
+                    }
+                    unsafe fn write(self, dst: *mut u8, archetype: &Archetype) {
+                        #[cfg(debug_assertions)]
+                        if !Self::archetype_contains(archetype) {
+                            panic!("Archetypes do not match");
+                        }
+                        #writes
+                        // We dont forget self, because it is already moved by the writes (partial
+                        // moves of every field -> complete move)
+                    }
+                    unsafe fn read(src: *const u8, archetype: &Archetype) -> Self {
+                        #[cfg(debug_assertions)]
+                        if !Self::archetype_contains(archetype) {
+                            panic!("Archetypes do not match");
+                        }
+                        let mut value = MaybeUninit::<Self>::uninit();
+                        #reads
+                        value.assume_init()
+                    }
+                    fn types() -> Vec<TypeId> {
+                        vec![
+                            #typeids
+                        ]
+                    }
+                }
+            }
+        });
+        quote! {
+            #(#impls)*
+        }
+    };
+    output.into()
+}
+
+#[proc_macro]
+pub fn impl_query(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let count = parse_macro_input!(input as Count).count;
+    let output = {
+        let impls = (1..=count).map(|count| {
+            // eg "A", "B"
+            let types = (0..count).map(|v| n_to_type(v, count));
+            // eg "(A, B,)"
+            let tuple = {
+                let types = types.clone();
+                quote!((#(#types),*,))
+            };
+            let generics = {
+                let types = types.clone();
+                quote!(<#(#types: QuerySingle),*>)
+            };
+            let matches = {
+                let types = types.clone();
+                quote!(#(&& #types::match_archetype(archetype))*)
+            };
+            let adds = {
+                let types = types.clone();
+                quote!(#(builder = #types::add_to_bitset(builder);)*)
+            };
+            let typeids = {
+                let types = types.clone();
+                quote!(#(#types::r#type()),*)
+            };
+            quote! {
+                impl #generics Query for #tuple {
+                    fn match_archetype(archetype: &Archetype) -> bool {
+                        true #matches
+                    }
+                    fn build(ptr: *mut u8, archetype: &Archetype) -> Self {
+                        (
+                            #(#types::build(ptr, archetype)),*,
+                        )
+                    }
+                    fn add_to_bitset(mut builder: BorrowBitsetBuilder) -> BorrowBitsetBuilder {
+                        #adds
+                        builder
+                    }
+                    fn types() -> Vec<TypeId> {
+                        vec![#typeids]
+                    }
+                }
+            }
+        });
+        quote! {
+            #(#impls)*
+        }
+    };
+    output.into()
+}
+
+#[proc_macro]
+pub fn impl_system(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let count = parse_macro_input!(input as Count).count;
+    let impls = (0..=count).map(|count| {
+        // eg "A", "B"
+        let types = (0..count).map(|v| n_to_type(v, count));
+        let registers = {
+            let types = types.clone();
+            quote!(#(#types::register(mappings);)*)
+        };
+        let requires = {
+            let types = types.clone();
+            quote!(#(builder = #types::require(builder);)*)
+        };
+        let generics = {
+            let types = types.clone();
+            let types2 = types.clone();
+            quote!(<Func: Fn(#(#types2),*) + 'static, #(#types: SystemArgument),*>)
+        };
+        let args = {
+            let types = types.clone();
+            quote! {
+                #(#types::fetch(context)),*
+            }
+        };
+        quote! {
+            impl #generics IntoSystem<(#(#types),*)> for Func {
+                fn into_system(self, mappings: &mut RequirementsMappings) -> System {
+                    #registers
+                    let mut builder = RequirementsBuilder::start(mappings);
+                    #requires
+                    // Arguments have been registering so unwrap is safe
+                    let requirements = builder.build().unwrap();
+                    System {
+                        requirements,
+                        run: Box::new(move |context| unsafe {
+                            self(#args)
+                        }),
+                    }
                 }
             }
         }
-        .into();
-    } else if &name_str == "pass_many" {
-        // sig should be fn pass_many(&mut self, entities: Vec<(... components type)>) -> ()
-        let entities_arg = args.next().expect("pass_many needs at least two arguments (fn pass_many(&mut self, entities: Vec<(...components...)>))");
-        let entities_arg = match entities_arg {
-            FnArg::Typed(ty) => ty,
-            _ => unreachable!(),
-        };
-        let entities_pat = *entities_arg.pat.to_owned();
-        let entities_type = *entities_arg.ty.to_owned();
-
-        if let Some((_, ty)) = parse_hashmap(entities_type) {
-            let comps = split_type(ty)
-                .into_iter()
-                .map(|ty| match parse_option(ty.to_owned()) {
-                    Some(ty) => (ty, true),
-                    None => (ty, false),
-                })
-                .collect::<Vec<(syn::Type, bool)>>();
-            let reqs = comps.iter().map(|(ty, opt)| {
-                let name = if *opt {
-                    quote! {add_optional}
-                } else {
-                    quote! {add}
-                };
-                quote! {
-                    .#name::<#ty>()
-                }
-            });
-            let tuple = comps.iter().map(|(ty, opt)| {
-                let unwrap = if *opt {
-                    quote! {}
-                } else {
-                    quote! {.unwrap()}
-                };
-                quote! {
-                    ecs::downcast_component::<#ty>(&mut e)#unwrap
-                }
-            });
-            let block = *fnc.block;
-
-            return quote! {
-                fn pass(&mut self, mut __entities: ecs::EntitiesBorrow) {
-                    let __reqs = ecs::SystemRequirements::new()
-                        #(#reqs)*;
-                    let mut __entities = __reqs.filter(&mut __entities);
-                    let #entities_pat = __entities.into_iter().map(|(id, mut e)| (id, (#(#tuple),*))).collect::<::std::collections::HashMap<_, _>>();
-                    #block;
-                }
-            }.into();
-        } else {
-            entities_arg
-                .span()
-                .unwrap()
-                .error("Second argument should be of form: name: Vec<(... components ...)>")
-                .emit();
-        }
-    } else {
-        name.span()
-            .unwrap()
-            .error("Function name should be either 'pass' 'pass_many'.")
-            .emit();
-    }
-
-    quote! {}.into()
+    });
+    quote!(#(#impls)*).into()
 }

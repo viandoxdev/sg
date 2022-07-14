@@ -1,36 +1,25 @@
 use std::{num::NonZeroU32, path::Path};
 
 use anyhow::{Context, Result};
-use ecs::OwnedEntity;
 use glam::{Quat, Vec2, Vec3};
 use gltf::image::Data as ImageData;
-use gltf::{image::Format, mesh::Reader};
+use gltf::image::Format;
 
 use crate::components::{GraphicsComponent, TransformsComponent};
 
 use super::Material;
 use super::{
     mesh_manager::{Mesh, Vertex},
-    texture_manager::{SingleValue, TextureHandle, TextureSet},
-    GraphicSystem,
+    texture_manager::{SingleValue, TextureHandle},
+    GraphicContext,
 };
 
+#[derive(Default)]
 struct ChannelIndex {
     red: Option<usize>,
     green: Option<usize>,
     blue: Option<usize>,
     alpha: Option<usize>,
-}
-
-impl Default for ChannelIndex {
-    fn default() -> Self {
-        ChannelIndex {
-            red: None,
-            green: None,
-            blue: None,
-            alpha: None,
-        }
-    }
 }
 
 trait FormatExt {
@@ -146,7 +135,7 @@ impl FormatExt for Format {
     }
 }
 
-fn load_image(gfx: &mut GraphicSystem, image: &mut ImageData, srgb: bool) -> wgpu::TextureView {
+fn load_image(gfx: &mut GraphicContext, image: &mut ImageData, srgb: bool) -> wgpu::TextureView {
     let size = wgpu::Extent3d {
         width: image.width,
         height: image.height,
@@ -196,7 +185,7 @@ fn load_image(gfx: &mut GraphicSystem, image: &mut ImageData, srgb: bool) -> wgp
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        &data,
+        data,
         wgpu::ImageDataLayout {
             offset: 0,
             bytes_per_row,
@@ -208,20 +197,23 @@ fn load_image(gfx: &mut GraphicSystem, image: &mut ImageData, srgb: bool) -> wgp
     tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-pub fn open<P: AsRef<Path>>(path: P, gfx: &mut GraphicSystem) -> Result<Vec<OwnedEntity>> {
+pub fn open<P: AsRef<Path>>(
+    path: P,
+    gfx: &mut GraphicContext,
+) -> Result<Vec<(GraphicsComponent, TransformsComponent)>> {
     let (doc, buffers, mut doc_images) = gltf::import(path)?;
 
     let mut mesh_handles = vec![vec![]; doc.meshes().count()];
     let mut materials: Vec<Option<Material>> = vec![None; doc.materials().count() + 1];
     let mut images: Vec<Vec<TextureHandle>> = vec![vec![]; doc.images().count()];
-    let mut entities: Vec<OwnedEntity> = Vec::new();
+    let mut entities: Vec<(GraphicsComponent, TransformsComponent)> = Vec::new();
 
     let default_material_index = materials.len() - 1;
 
     for mesh in doc.meshes() {
         for primitive in mesh.primitives() {
             let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-            let mut positions = reader
+            let positions = reader
                 .read_positions()
                 .context("Couldn't read vertex positions")?;
             let mut normals = reader.read_normals().context("Couldn't read normals")?;
@@ -248,7 +240,7 @@ pub fn open<P: AsRef<Path>>(path: P, gfx: &mut GraphicSystem) -> Result<Vec<Owne
                 m_indices.push([i1, i3, i2]); // swap to invert winding
             }
 
-            while let Some(position) = positions.next() {
+            for position in positions {
                 let position = Vec3::from(position);
                 let normal = Vec3::from(normals.next().context("No normal given for vertex")?);
                 let tex_coords = Vec2::from(
@@ -276,7 +268,7 @@ pub fn open<P: AsRef<Path>>(path: P, gfx: &mut GraphicSystem) -> Result<Vec<Owne
     }
 
     for material in doc.materials() {
-        let mut load = |gfx: &mut GraphicSystem, tex: gltf::Texture, srgb| {
+        let mut load = |gfx: &mut GraphicContext, tex: gltf::Texture, srgb| {
             // TODO: sampler
             let index = tex.source().index();
 
@@ -391,10 +383,7 @@ pub fn open<P: AsRef<Path>>(path: P, gfx: &mut GraphicSystem) -> Result<Vec<Owne
                     let mesh = mesh_handles[mesh.index()][index];
                     let gfc = GraphicsComponent { material, mesh };
 
-                    let mut entity = OwnedEntity::new();
-                    entity.add(gfc);
-                    entity.add(tsm.clone());
-                    entities.push(entity);
+                    entities.push((gfc, tsm.clone()));
                 }
             }
         }
