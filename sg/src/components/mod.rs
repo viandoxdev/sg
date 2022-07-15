@@ -1,5 +1,4 @@
 use glam::{Mat4, Quat, Vec3};
-use uuid::Uuid;
 
 use crate::systems::graphics::{
     mesh_manager::MeshHandle,
@@ -21,14 +20,12 @@ pub struct GraphicsComponent {
 #[derive(Clone, Copy)]
 pub struct LightComponent {
     pub light: Light,
-    pub id: Uuid,
 }
 
 impl LightComponent {
     pub fn new(light: Light) -> Self {
         Self {
             light,
-            id: Uuid::new_v4(),
         }
     }
 }

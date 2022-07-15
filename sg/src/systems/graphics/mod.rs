@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use anyhow::Result;
-use ecs::Entities;
+use ecs::{Entities, Entity};
 use glam::{Vec3, Vec4};
 use uuid::Uuid;
 use winit::window::Window;
@@ -161,17 +161,16 @@ pub struct GraphicContext {
     geometry_pipeline: Pipeline,
     feedback: Result<(), wgpu::SurfaceError>,
     g_buffer: GBuffer,
-    lights_cache: HashSet<Uuid>,
+    lights_cache: HashSet<Entity>,
     pub camera: Camera,
     pub mesh_manager: MeshManager,
     pub texture_manager: TextureManager,
 }
 
-pub fn lights_system(ctx: &mut GraphicContext, lights: Entities<&LightComponent>) {
+pub fn lights_system(ctx: &mut GraphicContext, lights: Entities<(Entity, &LightComponent)>) {
     let lights = lights.collect::<Vec<_>>();
     let mut lights_changed = lights.len() != ctx.lights_cache.len();
-    for light in &lights {
-        let id = &light.id;
+    for (id, _) in &lights {
         if !ctx.lights_cache.contains(id) {
             lights_changed = true;
             break;
@@ -181,11 +180,9 @@ pub fn lights_system(ctx: &mut GraphicContext, lights: Entities<&LightComponent>
     if lights_changed {
         // update the cache
         ctx.lights_cache.clear();
-        ctx.lights_cache.extend(lights.iter().map(|l| l.id));
-        // update the g_buffer
-        let lights = lights.into_iter().map(|c| c.light).collect::<Vec<_>>();
+        ctx.lights_cache.extend(lights.iter().map(|(id, _)| id));
         // TODO make this take an impl IntoIterator
-        if let Err(overflow) = ctx.g_buffer.update_lights(&ctx.device, &lights) {
+        if let Err(overflow) = ctx.g_buffer.update_lights(&ctx.device, lights.iter().map(|(_, light)| &light.light)) {
             let current_max = ctx
                 .shading_pipeline
                 .shader

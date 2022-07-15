@@ -18,5 +18,6 @@ pub use executor::Schedule;
 pub use executor::Scheduler;
 pub use system::Entities;
 pub use world::World;
+pub use entity::Entity;
 
 // TODO: Ids in queries (something like taking an Entity, by value -> taking the id).

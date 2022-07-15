@@ -11,7 +11,7 @@ use ecs_macros::impl_archetype;
 
 use crate::{
     bitset::{ArchetypeBitset, ArchetypeBitsetBuilder, ArchetypeBitsetMapping, BitsetBuilder},
-    query::{Query, QueryIter},
+    query::{Query, QueryIter}, entity::LocationMap,
 };
 
 type DropInPlace = fn(*mut ());
@@ -307,8 +307,14 @@ impl ArchetypeStorage {
     }
     /// Create an QueryIter of this storage, this doesn't have any memory safety checks and will
     /// break if used after drop of this storage, or if used concurently.
-    pub unsafe fn iter_query<Q: Query>(&self) -> QueryIter<Q> {
-        QueryIter::new(self.data, self.length, &self.archetype as *const Archetype)
+    pub unsafe fn iter_query<Q: Query>(&self, index: usize, location_map: Option<&LocationMap>) -> QueryIter<Q> {
+        QueryIter::new(
+            self.data,
+            self.length,
+            &self.archetype as *const Archetype,
+            index,
+            location_map.map(|v| v as *const LocationMap),
+        )
     }
     /// Get the archetype of this storage
     pub fn archetype(&self) -> &Archetype {
@@ -521,14 +527,14 @@ mod tests {
         at.push((12u8, 34i32, "str".to_owned(), (), false));
         at.push((25i32, "abc".to_owned(), (), 17u8, true));
         at.push(("bob".to_owned(), (), 99u8, 68i32, false));
-        let mut iter = unsafe { at.iter_query::<(&String, &i32, Option<&bool>, Option<&u128>)>() };
+        let mut iter = unsafe { at.iter_query::<(&String, &i32, Option<&bool>, Option<&u128>)>(0, None) };
 
         eq!(Some(("str", 34i32, Some(false), None)), iter.next());
         eq!(Some(("abc", 25i32, Some(true), None)), iter.next());
         eq!(Some(("bob", 68i32, Some(false), None)), iter.next());
         assert_eq!(None, iter.next());
 
-        let iter = unsafe { at.iter_query::<&mut i32>() };
+        let iter = unsafe { at.iter_query::<&mut i32>(0, None) };
         for i in iter {
             *i = 69;
         }

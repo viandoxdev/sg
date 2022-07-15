@@ -71,6 +71,7 @@ impl LocationMap {
         let old_loc = self.entities[entity];
         self.entities[entity] = location;
         self.locations.remove(&old_loc).unwrap();
+        self.locations.insert(location, entity);
         self.shift(1, old_loc.entity + 1, old_loc.archetype);
     }
     pub fn add_single(&mut self, archetype: usize) -> Entity {
@@ -123,7 +124,10 @@ impl LocationMap {
         self.shift(count, index + 1, archetype);
         Some(res)
     }
-    pub fn get(&self, entity: Entity) -> Option<&Location> {
-        self.entities.get(entity)
+    pub fn get_location(&self, entity: Entity) -> Option<Location> {
+        self.entities.get(entity).copied()
+    }
+    pub fn get_entity(&self, loc: Location) -> Option<Entity> {
+        self.locations.get(&loc).copied()
     }
 }

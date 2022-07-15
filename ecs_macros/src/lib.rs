@@ -207,9 +207,9 @@ pub fn impl_query(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     fn match_archetype(archetype: &Archetype) -> bool {
                         true #matches
                     }
-                    fn build(ptr: *mut u8, archetype: &Archetype) -> Self {
+                    fn build(ptr: *mut u8, archetype: &Archetype, entity: Entity) -> Self {
                         (
-                            #(#types::build(ptr, archetype)),*,
+                            #(#types::build(ptr, archetype, entity)),*,
                         )
                     }
                     fn add_to_bitset(mut builder: BorrowBitsetBuilder) -> BorrowBitsetBuilder {
@@ -217,7 +217,7 @@ pub fn impl_query(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                         builder
                     }
                     fn types() -> Vec<TypeId> {
-                        vec![#typeids]
+                        [#typeids].into_iter().flatten().collect()
                     }
                 }
             }

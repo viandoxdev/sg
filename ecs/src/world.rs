@@ -160,7 +160,7 @@ impl World {
     }
     /// Add a component to an entity, this is very slow (comparatively) and should be avoided
     pub fn add_component<T: IntoArchetype>(&mut self, entity: Entity, value: T) -> Option<()> {
-        let loc = *self.location_map.get(entity)?;
+        let loc = self.location_map.get_location(entity)?;
         let archetype_bitset = self.archetypes[loc.archetype].1;
         let mut archetype = self.archetypes[loc.archetype].0.archetype().clone();
         for t in T::types() {
@@ -202,7 +202,7 @@ impl World {
     }
     /// Take a component from an entity, this is very slow (comparatively) and should be avoided
     pub fn take_component<T: IntoArchetype>(&mut self, entity: Entity) -> Option<T> {
-        let loc = *self.location_map.get(entity)?;
+        let loc = self.location_map.get_location(entity)?;
         let archetype_bitset = self.archetypes[loc.archetype].1;
         let mut archetype = self.archetypes[loc.archetype].0.archetype().clone();
 
@@ -242,16 +242,16 @@ impl World {
     }
     fn query_iter<Q: Query>(&self, set: BorrowBitset) -> QueryIterBundle<Q> {
         let requirements = set.required();
-        let storages = self.archetypes.iter().filter_map(|(storage, set)| {
+        let storages = self.archetypes.iter().enumerate().filter_map(|(index, (storage, set))| {
             match *set & requirements == requirements {
-                true => Some(storage),
+                true => Some((index, storage)),
                 false => None,
             }
         });
         // TODO: use with_capacity
         let mut iter = QueryIterBundle::new();
-        for storage in storages {
-            iter.push(unsafe { storage.iter_query::<Q>() });
+        for (index, storage) in storages {
+            iter.push(unsafe { storage.iter_query::<Q>(index, Some(&self.location_map)) });
         }
         iter
     }
@@ -297,7 +297,9 @@ impl Default for World {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::{sync::atomic::{AtomicU64, Ordering}, collections::HashSet};
+
+    use crate::{Entities, Executor};
 
     use super::*;
     #[test]
@@ -372,5 +374,24 @@ mod tests {
         w.add_component(e, (true,));
         assert_eq!(true, **w.query_single::<&bool>().unwrap());
         assert_eq!(24, **w.query_single::<&i32>().unwrap());
+    }
+    #[test]
+    fn query_id() {
+        let mut w = World::new();
+        let mut e = Executor::new();
+        let entities_id = std::iter::repeat_with(|| w.spawn((0,)))
+            .take(10)
+            .collect::<HashSet<Entity>>();
+
+        let sys = move |entities: Entities<Entity>| {
+            let entities = entities.collect::<Vec<_>>();
+            assert_eq!(entities.len(), entities_id.len());
+            for entity in entities {
+                assert!(entities_id.contains(&entity));
+            }
+        };
+        let s = e.schedule().then(sys)
+            .build();
+        e.execute(&s, &mut w);
     }
 }
