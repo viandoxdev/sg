@@ -7,5 +7,3 @@ This is a game engine probably
 ```bash
 git gud
 ```
-
-### Some things are happening on the ecs\_reword branch
