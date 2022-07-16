@@ -95,7 +95,8 @@ impl Camera {
         self.aspect
     }
     fn recompute_matrix(&mut self) {
-        let view = Mat4::from_rotation_translation(self.rotation.inverse(), -self.position);
+        let mut view = Mat4::from_quat(self.rotation.inverse());
+        view *= Mat4::from_translation(-self.position);
         let projection = match self.projection {
             Projection::Perspective => {
                 Mat4::perspective_lh(self.fov, self.aspect, self.near, self.far)

@@ -73,4 +73,12 @@ impl TransformsComponent {
     pub fn mat(&self) -> Mat4 {
         self.matrix
     }
+    pub fn apply(&mut self, other: &Self) {
+        let mat = self.mat() * other.mat();
+        let (scale, rot, trans) = mat.to_scale_rotation_translation();
+        self.scale = scale;
+        self.rotate = rot;
+        self.translate = trans;
+        self.matrix = mat;
+    }
 }

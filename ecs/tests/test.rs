@@ -1,4 +1,6 @@
-use ecs::{Entities, Executor, World};
+use std::collections::HashSet;
+
+use ecs::{Entities, Executor, World, Entity};
 
 fn print_system(entities: Entities<&i32>, res: &i32) {
     for int in entities {
@@ -37,9 +39,11 @@ fn basic() {
     executor.add_resource(0);
     assert_eq!(0, *executor.get_resource::<i32>().unwrap());
 
-    world.spawn((12, true, 0u8));
-    world.spawn((420, true, 1u8));
-    world.spawn((56, 2u8));
+    let entities = [
+        world.spawn((12, true, 0u8)),
+        world.spawn((420, true, 1u8)),
+        world.spawn((56, 2u8))
+    ].into_iter().collect::<HashSet<_>>();
 
     let schedule = executor
         .schedule()
@@ -55,4 +59,16 @@ fn basic() {
     }
 
     executor.execute(&assert, &mut world);
+
+    let list = move |e: Entities<Entity>| {
+        let es = e.collect::<Vec<_>>();
+        assert_eq!(es.len(), entities.len());
+        for entity in &es {
+            println!("Entity {entity:?}");
+            assert!(entities.contains(entity));
+        }
+    };
+
+    let list_s = executor.schedule().then(list).build();
+    executor.execute(&list_s, &mut world);
 }

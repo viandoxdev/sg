@@ -84,7 +84,7 @@ impl World {
     }
     /// Spawn an entity in the world
     pub fn spawn<T: IntoArchetype>(&mut self, entity: T) -> Entity {
-        match self
+        let e = match self
             .archetypes
             .iter_mut()
             .enumerate()
@@ -98,14 +98,16 @@ impl World {
                 self.add_archetype::<T>().push(entity);
                 self.location_map.add_single(self.archetypes.len() - 1)
             }
-        }
+        };
+        log::debug!("Spawned {e:?}!");
+        e
     }
     /// Spawn many entities in the world
     pub fn spawn_many<T: IntoArchetype>(
         &mut self,
         entities: impl IntoIterator<Item = T>,
     ) -> Vec<Entity> {
-        match self
+        let res = match self
             .archetypes
             .iter_mut()
             .enumerate()
@@ -123,7 +125,13 @@ impl World {
                 let len = storage.len();
                 self.location_map.add(self.archetypes.len() - 1, len)
             }
+        };
+        if log::log_enabled!(log::Level::Debug) {
+            for e in &res {
+                log::debug!("Spawned {e:?}!");
+            }
         }
+        res
     }
     /// Delete an entity from the world (calls drop), unlike take, this doesn't need to know the
     /// type of the components of the entity.

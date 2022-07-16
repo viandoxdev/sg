@@ -119,7 +119,7 @@ impl<'a> Shader {
                 )
             }
         }
-        device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+        device.create_shader_module(wgpu::ShaderModuleDescriptor {
             source: wgpu::ShaderSource::Wgsl(source.into()),
             label: Some(self.name),
         })

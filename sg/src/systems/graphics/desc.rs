@@ -6,7 +6,7 @@ macro_rules! geometry_renderpass_desc {
         wgpu::RenderPassDescriptor {
             label: Some("gfx render pass"),
             color_attachments: &[
-                wgpu::RenderPassColorAttachment {
+                Some(wgpu::RenderPassColorAttachment {
                     view: &$g_buffer.albedo_tex,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -18,8 +18,8 @@ macro_rules! geometry_renderpass_desc {
                         }),
                         store: true,
                     },
-                },
-                wgpu::RenderPassColorAttachment {
+                }),
+                Some(wgpu::RenderPassColorAttachment {
                     view: &$g_buffer.position_tex,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -31,8 +31,8 @@ macro_rules! geometry_renderpass_desc {
                         }),
                         store: true,
                     },
-                },
-                wgpu::RenderPassColorAttachment {
+                }),
+                Some(wgpu::RenderPassColorAttachment {
                     view: &$g_buffer.normal_tex,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -44,8 +44,8 @@ macro_rules! geometry_renderpass_desc {
                         }),
                         store: true,
                     },
-                },
-                wgpu::RenderPassColorAttachment {
+                }),
+                Some(wgpu::RenderPassColorAttachment {
                     view: &$g_buffer.mra_tex,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -57,7 +57,7 @@ macro_rules! geometry_renderpass_desc {
                         }),
                         store: true,
                     },
-                },
+                }),
             ],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &$g_buffer.depth_tex,
@@ -76,7 +76,7 @@ macro_rules! shading_renderpass_desc {
     ($view:expr) => {
         wgpu::RenderPassDescriptor {
             label: Some("Shading pass"),
-            color_attachments: &[wgpu::RenderPassColorAttachment {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: $view,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -88,7 +88,7 @@ macro_rules! shading_renderpass_desc {
                     }),
                     store: true,
                 },
-            }],
+            })],
             depth_stencil_attachment: None,
         }
     };
@@ -108,26 +108,26 @@ macro_rules! geometry_pipeline_desc {
                 module: $shader,
                 entry_point: "fs_main",
                 targets: &[
-                    wgpu::ColorTargetState {
+                    Some(wgpu::ColorTargetState {
                         format: wgpu::TextureFormat::Rgba8UnormSrgb,
                         blend: Some(wgpu::BlendState::REPLACE),
                         write_mask: wgpu::ColorWrites::ALL,
-                    },
-                    wgpu::ColorTargetState {
+                    }),
+                    Some(wgpu::ColorTargetState {
                         format: wgpu::TextureFormat::Rgba32Float,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
-                    },
-                    wgpu::ColorTargetState {
+                    }),
+                    Some(wgpu::ColorTargetState {
                         format: wgpu::TextureFormat::Rgba32Float,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
-                    },
-                    wgpu::ColorTargetState {
+                    }),
+                    Some(wgpu::ColorTargetState {
                         format: wgpu::TextureFormat::Rgba8Unorm,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
-                    },
+                    }),
                 ],
             }),
             primitive: wgpu::PrimitiveState {
@@ -170,11 +170,11 @@ macro_rules! shading_pipeline_desc {
             fragment: Some(wgpu::FragmentState {
                 module: $shader,
                 entry_point: "fs_main",
-                targets: &[wgpu::ColorTargetState {
+                targets: &[Some(wgpu::ColorTargetState {
                     format: $format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
-                }],
+                })],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,

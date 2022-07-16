@@ -3,7 +3,6 @@ use std::collections::HashSet;
 use anyhow::Result;
 use ecs::{Entities, Entity};
 use glam::{Vec3, Vec4};
-use uuid::Uuid;
 use winit::window::Window;
 
 use crate::{
@@ -200,7 +199,7 @@ pub fn lights_system(ctx: &mut GraphicContext, lights: Entities<(Entity, &LightC
 
 pub fn graphic_system(
     ctx: &mut GraphicContext,
-    renderables: Entities<(&GraphicsComponent, Option<&TransformsComponent>)>,
+    renderables: Entities<(Entity, &GraphicsComponent, Option<&TransformsComponent>)>,
 ) {
     ctx.feedback = Ok(());
 
@@ -222,7 +221,7 @@ pub fn graphic_system(
 
             ctx.camera.update(&ctx.device, &ctx.queue);
 
-            for (gfx, tsm) in renderables {
+            for (_, gfx, tsm) in renderables {
                 let tsm = tsm.cloned().unwrap_or_default();
                 let mesh = ctx
                     .mesh_manager
@@ -299,7 +298,7 @@ impl GraphicContext {
             .unwrap();
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface.get_preferred_format(&adapter).unwrap(),
+            format: surface.get_supported_formats(&adapter)[0],
             width: size.width,
             height: size.height,
             present_mode: wgpu::PresentMode::Fifo,

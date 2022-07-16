@@ -2,10 +2,12 @@ use std::{num::NonZeroU32, path::Path};
 
 use anyhow::{Context, Result};
 use glam::{Quat, Vec2, Vec3};
+use gltf::Node;
 use gltf::image::Data as ImageData;
 use gltf::image::Format;
 
 use crate::components::{GraphicsComponent, TransformsComponent};
+use crate::systems::graphics::mesh_manager::MeshHandle;
 
 use super::Material;
 use super::{
@@ -142,32 +144,102 @@ fn load_image(gfx: &mut GraphicContext, image: &mut ImageData, srgb: bool) -> wg
         depth_or_array_layers: 1,
     };
 
-    let data = &mut image.pixels;
+    log::trace!("image loading - cloning");
+    let mut data = image.pixels.clone();
 
-    let format = image.format.to_wgpu(srgb);
-    let bytes_per_pixel = image.format.bytes_per_pixel();
+    let mut format = image.format.to_wgpu(srgb);
+    let mut bytes_per_pixel = image.format.bytes_per_pixel();
     match image.format {
         // these formats require adding in an alpha channel
         Format::R8G8B8 => {
-            for i in 0..(data.len() / 3) {
-                data.insert(i * 4 + 3, 255);
+            log::trace!("image loading - format conversion (RGB8 -> RGBA8)");
+            let mut new = Vec::with_capacity(data.len() / 3 * 4);
+            for rgb in data.chunks(3) {
+                new.extend_from_slice(rgb);
+                new.push(255);
             }
+            data = new;
+            log::trace!("image loading - format converted");
         }
         Format::B8G8R8 => {
-            for i in 0..(data.len() / 3) {
-                data.insert(i * 4 + 3, 255);
+            log::trace!("image loading - format conversion (BGR8 -> BGRA8)");
+            let mut new = Vec::with_capacity(data.len() / 3 * 4);
+            for rgb in data.chunks(3) {
+                new.extend_from_slice(rgb);
+                new.push(255);
             }
+            data = new;
+            log::trace!("image loading - format converted");
         }
         Format::R16G16B16 => {
-            for i in 0..(data.len() / 6) {
-                data.insert(i * 8 + 6, 255);
-                data.insert(i * 8 + 6, 255);
+            log::trace!("image loading - format conversion (BGR16 -> BGRA16)");
+            let mut new = Vec::with_capacity(data.len() / 6 * 8);
+            for rgb in data.chunks(6) {
+                new.extend_from_slice(rgb);
+                new.extend_from_slice(&[255;2]);
             }
+            data = new;
+            log::trace!("image loading - format converted");
+        }
+        // Theses single channel format are converted to grayscale rgba
+        Format::R8 => {
+            log::trace!("image loading - format conversion (R8 -> RGBA8)");
+            let mut new = Vec::with_capacity(data.len() * 4);
+            for r in data {
+                new.extend_from_slice(&[r, r, r, 255]);
+            }
+            data = new;
+            format = wgpu::TextureFormat::Rgba8Unorm;
+            bytes_per_pixel = 4;
+            log::trace!("image loading - format converted");
+        }
+        Format::R16 => {
+            log::trace!("image loading - format conversion (RG16 -> RGBA16)");
+            let mut new = Vec::with_capacity(data.len() * 4);
+            for r in data.chunks(2) {
+                new.extend_from_slice(r);
+                new.extend_from_slice(r);
+                new.extend_from_slice(r);
+                new.extend_from_slice(&[255, 255]);
+            }
+            data = new;
+            format = wgpu::TextureFormat::Rgba16Unorm;
+            bytes_per_pixel = 8;
+            log::trace!("image loading - format converted");
+        }
+        // Theses two channel formats are converted to alpha luminesance rgba
+        Format::R8G8 => {
+            log::trace!("image loading - format conversion (RG8 -> RGBA8)");
+            let mut new = Vec::with_capacity(data.len() * 2);
+            for chunk in data.chunks(2) {
+                let l = chunk[0];
+                let a = chunk[1];
+                new.extend_from_slice(&[l, l, l, a]);
+            }
+            data = new;
+            format = wgpu::TextureFormat::Rgba8Unorm;
+            bytes_per_pixel = 4;
+            log::trace!("image loading - format converted");
+        }
+        Format::R16G16 => {
+            log::trace!("image loading - format conversion (R16 -> RGBA16)");
+            let mut new = Vec::with_capacity(data.len() * 2);
+            for chunk in data.chunks(4) {
+                if let [l1, l2, a1, a2] = *chunk {
+                    new.extend_from_slice(&[l1, l2, l1, l2, l1, l2, a1, a2]);
+                } else {
+                    panic!("No bytes ?");
+                }
+            }
+            data = new;
+            format = wgpu::TextureFormat::Rgba16Unorm;
+            bytes_per_pixel = 8;
+            log::trace!("image loading - format converted");
         }
         _ => {}
     }
     let bytes_per_row = Some(NonZeroU32::new(bytes_per_pixel as u32 * image.width).unwrap());
-
+    log::trace!("image loading - gpu texture creation");
     let tex = gfx.device.create_texture(&wgpu::TextureDescriptor {
         format,
         size,
@@ -185,7 +257,7 @@ fn load_image(gfx: &mut GraphicContext, image: &mut ImageData, srgb: bool) -> wg
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        data,
+        &data,
         wgpu::ImageDataLayout {
             offset: 0,
             bytes_per_row,
@@ -194,6 +266,7 @@ fn load_image(gfx: &mut GraphicContext, image: &mut ImageData, srgb: bool) -> wg
         size,
     );
 
+    log::trace!("image loading - gpu texture created");
     tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
@@ -201,17 +274,19 @@ pub fn open<P: AsRef<Path>>(
     path: P,
     gfx: &mut GraphicContext,
 ) -> Result<Vec<(GraphicsComponent, TransformsComponent)>> {
+    log::trace!("Importing gltf...");
     let (doc, buffers, mut doc_images) = gltf::import(path)?;
-
+    log::trace!("done");
     let mut mesh_handles = vec![vec![]; doc.meshes().count()];
     let mut materials: Vec<Option<Material>> = vec![None; doc.materials().count() + 1];
     let mut images: Vec<Vec<TextureHandle>> = vec![vec![]; doc.images().count()];
     let mut entities: Vec<(GraphicsComponent, TransformsComponent)> = Vec::new();
 
     let default_material_index = materials.len() - 1;
-
+    log::trace!("Processing gltf 1/3 - meshes");
     for mesh in doc.meshes() {
         for primitive in mesh.primitives() {
+            log::trace!("  mesh: getting data ({:?})", mesh.name());
             let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
             let positions = reader
                 .read_positions()
@@ -219,12 +294,22 @@ pub fn open<P: AsRef<Path>>(
             let mut normals = reader.read_normals().context("Couldn't read normals")?;
             let mut tex_coords = reader
                 .read_tex_coords(0)
-                .context("Couldn't read texture coordinates")?
-                .into_f32();
+                .or_else(|| reader.read_tex_coords(1))
+                .map(|t| t.into_f32());
+            let mut default_tex_coords = std::iter::repeat([0.0; 2]);
+            let tex_coords: &mut dyn Iterator<Item = [f32; 2]> = tex_coords
+                .as_mut()
+                .map(|t| t as &mut dyn Iterator<Item = [f32; 2]>)
+                .unwrap_or_else(|| {
+                    log::warn!("No tex coords for mesh");
+                    &mut default_tex_coords
+                });
             let mut indices = reader
                 .read_indices()
                 .context("Couldn't read indices")?
                 .into_u32();
+
+            log::trace!("    - processing indices");
 
             let mut m_indices = Vec::new();
             let mut m_vertices = Vec::new();
@@ -239,6 +324,8 @@ pub fn open<P: AsRef<Path>>(
                 );
                 m_indices.push([i1, i3, i2]); // swap to invert winding
             }
+
+            log::trace!("    - processing vertices");
 
             for position in positions {
                 let position = Vec3::from(position);
@@ -262,11 +349,12 @@ pub fn open<P: AsRef<Path>>(
                 indices: m_indices,
                 vertices: m_vertices,
             };
+            log::trace!("    - processing tangents");
             m_mesh.recompute_tangents();
             mesh_handles[mesh.index()].push(gfx.mesh_manager.add(&gfx.device, &m_mesh));
         }
     }
-
+    log::trace!("Processing gltf 2/3 - materials");
     for material in doc.materials() {
         let mut load = |gfx: &mut GraphicContext, tex: gltf::Texture, srgb| {
             // TODO: sampler
@@ -282,25 +370,32 @@ pub fn open<P: AsRef<Path>>(
             handle
         };
 
+        log::trace!("  material: loading data");
+
         let pbrmr = material.pbr_metallic_roughness();
+        log::trace!("    - albedo loading");
         let albedo = pbrmr
             .base_color_texture()
             .map(|tex| load(gfx, tex.texture(), true))
             .unwrap_or_else(|| {
+                log::trace!("    - albedo caching");
                 gfx.texture_manager.get_or_add_single_value_texture(
                     &gfx.device,
                     &gfx.queue,
                     SingleValue::Color(pbrmr.base_color_factor().into()),
                 )
             });
+        log::trace!("    - normals");
         let normal_map = material
             .normal_texture()
             .map(|tex| load(gfx, tex.texture(), false));
+        log::trace!("    - ao");
         let ao = material
             .occlusion_texture()
             .map(|tex| load(gfx, tex.texture(), false));
         let metallic;
         let roughness;
+        log::trace!("    - processing MR");
         if let Some(tex) = pbrmr.metallic_roughness_texture() {
             let tex = tex.texture();
             // TODO: sampler
@@ -364,29 +459,53 @@ pub fn open<P: AsRef<Path>>(
                 .context("Error on material creation")?,
         );
     }
+    log::trace!("Processing gltf 3/3 - scenes");
+
+    fn process_node(
+        node: Node,
+        parent_tsm: &TransformsComponent,
+        default_material_index: usize,
+        materials: &Vec<Option<Material>>,
+        mesh_handles: &Vec<Vec<MeshHandle>>,
+        entities: &mut Vec<(GraphicsComponent,
+        TransformsComponent)>,
+    ) -> Result<()>
+    {
+        log::trace!("  scene: getting node transforms");
+        let (translation, rotation, scale) = node.transform().decomposed();
+        let mut tsm = TransformsComponent::new();
+        tsm.set_translation(Vec3::from(translation));
+        tsm.set_rotation(Quat::from_array(rotation));
+        tsm.set_scale(Vec3::from(scale));
+        tsm.apply(&parent_tsm);
+        if let Some(mesh) = node.mesh() {
+            log::trace!("    - has mesh, making entities");
+            for (index, primitive) in mesh.primitives().enumerate() {
+                let material_index = primitive
+                    .material()
+                    .index()
+                    .unwrap_or(default_material_index);
+                let material = materials[material_index].context("No such material")?;
+                let mesh = mesh_handles[mesh.index()][index];
+                let gfc = GraphicsComponent { material, mesh };
+                log::trace!("      - adding entity");
+                entities.push((gfc, tsm.clone()));
+            }
+        } else {
+            log::trace!("    - no mesh found");
+        }
+        log::trace!("    - iterating over children");
+        for node in node.children() {
+            process_node(node, &tsm, default_material_index, materials, mesh_handles, entities)?;
+        }
+        Ok(())
+    }
 
     for scene in doc.scenes() {
-        println!("Scene");
         for node in scene.nodes() {
-            let (translation, rotation, scale) = node.transform().decomposed();
-            let mut tsm = TransformsComponent::new();
-            tsm.set_translation(Vec3::from(translation));
-            tsm.set_rotation(Quat::from_array(rotation));
-            tsm.set_scale(Vec3::from(scale));
-            if let Some(mesh) = node.mesh() {
-                for (index, primitive) in mesh.primitives().enumerate() {
-                    let material_index = primitive
-                        .material()
-                        .index()
-                        .unwrap_or(default_material_index);
-                    let material = materials[material_index].context("No such material")?;
-                    let mesh = mesh_handles[mesh.index()][index];
-                    let gfc = GraphicsComponent { material, mesh };
-
-                    entities.push((gfc, tsm.clone()));
-                }
-            }
+            process_node(node, &TransformsComponent::default(), default_material_index, &materials, &mesh_handles, &mut entities)?;
         }
     }
+    log::trace!("Processing gltf - done");
     Ok(entities)
 }

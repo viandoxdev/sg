@@ -26,7 +26,4 @@ mio = { version = "0.8.3", features = ["net", "os-poll"] }
 regex = "1.5"
 codespan-reporting = "0.11"
 gltf = { version = "1.0", features = ["KHR_lights_punctual"] }
-
-[dependencies.wgpu]
-git = "https://github.com/gfx-rs/wgpu"
-rev = "8e62ca05381fed4f89fabf3eea8340f2f347c31f"
+wgpu = { version = "0.13.1", features = ["trace"] }

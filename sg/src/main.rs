@@ -3,30 +3,115 @@
 #![allow(incomplete_features)]
 #![allow(dead_code)]
 
-use ecs::{Executor, World};
-use glam::{Vec3, Vec4};
+use std::collections::HashMap;
+use std::f32::consts::PI;
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+
+use ecs::{Executor, World, Entities};
+use glam::{Vec3, Vec4, Quat, Vec2, EulerRot};
+use parking_lot::RwLock;
+use slotmap::{SlotMap, SecondaryMap};
 use systems::graphics::{
     gltf, graphic_system, lights_system, GraphicContext, Light, PointLight,
 };
-use winit::event::{Event, WindowEvent};
+use winit::dpi::PhysicalPosition;
+use winit::event::{Event, WindowEvent, KeyboardInput, ElementState, VirtualKeyCode, ScanCode};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 
-use components::LightComponent;
+use components::{LightComponent, TransformsComponent};
 
 mod chess;
 pub mod components;
 pub mod systems;
+
+slotmap::new_key_type! {
+    struct Input;
+}
+
+const CENTER_POS: PhysicalPosition<f64> = PhysicalPosition::new(100.0, 100.0);
+
+#[derive(Default)]
+struct InputState {
+    states: RwLock<SlotMap<Input, RwLock<ElementState>>>,
+    keycodes: RwLock<HashMap<VirtualKeyCode, Input>>,
+    scancodes: RwLock<HashMap<ScanCode, Input>>,
+    mouse_delta: RwLock<Vec2>,
+}
+
+impl InputState {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_input_by_keycode(&self, keycode: VirtualKeyCode) -> Option<Input> {
+        self.keycodes.read().get(&keycode).copied()
+    }
+
+    fn get_input_by_scancode(&self, scancode: ScanCode) -> Option<Input> {
+        self.scancodes.read().get(&scancode).copied()
+    }
+
+    fn try_get_input(&self, input: &KeyboardInput) -> Option<Input> {
+        self.get_input_by_scancode(input.scancode)
+            .or(self.get_input_by_keycode(input.virtual_keycode?))
+    }
+
+    fn get_state(&self, input: Input) -> Option<ElementState> {
+        self.states.read().get(input).map(|e| *e.read())
+    }
+
+
+    fn get_state_by_keycode(&self, keycode: VirtualKeyCode) -> Option<ElementState> {
+        self.get_state(self.get_input_by_keycode(keycode)?)
+    }
+
+    fn get_state_by_scancode(&self, scancode: ScanCode) -> Option<ElementState> {
+        self.get_state(self.get_input_by_scancode(scancode)?)
+    }
+
+    fn is_pressed_keycode(&self, keycode: VirtualKeyCode) -> bool {
+        if let Some(ElementState::Pressed) = self.get_state_by_keycode(keycode) {
+            true
+        } else {
+            false
+        }
+    }
+
+    fn notify(&self, input: KeyboardInput) {
+        let key = self.try_get_input(&input).unwrap_or_else(|| {
+            let key = self.states.write().insert(RwLock::new(input.state));
+            self.scancodes.write().insert(input.scancode, key);
+            if let Some(keycode) = input.virtual_keycode {
+                self.keycodes.write().insert(keycode, key);
+            }
+            key
+        });
+
+        *self.states.read().get(key).unwrap().write() = input.state;
+    }
+
+    fn get_mouse_delta(&self) -> Vec2 {
+        *self.mouse_delta.read()
+    }
+
+    fn notify_mouse(&self, pos: PhysicalPosition<f64>) {
+        *self.mouse_delta.write() = Vec2::new(pos.x as f32 - CENTER_POS.x as f32, pos.y as f32 - CENTER_POS.y as f32);
+    }
+}
 
 async fn run(mut world: World, mut executor: Executor) {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
 
     let mut gfx = GraphicContext::new(&window).await;
-    gfx.camera.set_position(Vec3::new(0.0, 7.0, -8.0));
-    let entities = gltf::open("model.glb", &mut gfx).expect("Error");
+    gfx.camera.set_position(Vec3::new(0.0, 0.0, 2.0));
+    gfx.camera.set_rotation(Quat::from_rotation_y(PI));
+    world.spawn_many(gltf::open("armor.glb", &mut gfx).expect("Error"));
+    let inputs = Arc::new(InputState::new());
 
-    world.spawn_many(entities);
     executor.add_resource(gfx);
 
     //let entity;
@@ -74,39 +159,87 @@ async fn run(mut world: World, mut executor: Executor) {
     //}
 
     let pos = [
-        Vec3::new(1.0, 1.0, -3.0),
-        Vec3::new(-1.0, 1.0, -3.0),
-        Vec3::new(-1.0, -1.0, -3.0),
-        Vec3::new(1.0, -1.0, -3.0),
-        Vec3::new(1.0, 4.0, -3.0),
-        Vec3::new(-1.0, 4.0, -3.0),
-        Vec3::new(-1.0, 2.0, -3.0),
-        Vec3::new(1.0, 2.0, -3.0),
+        Vec3::new( 1.0,  1.0, 6.0),
+        Vec3::new(-1.0,  1.0, 6.0),
+        Vec3::new(-1.0, -1.0, 6.0),
+        Vec3::new( 1.0, -1.0, 6.0),
+        Vec3::new( 1.0,  4.0, 6.0),
+        Vec3::new(-1.0,  4.0, 6.0),
+        Vec3::new(-1.0,  2.0, 6.0),
+        Vec3::new( 1.0,  2.0, 6.0),
     ];
     let lc = Vec4::splat(27.0);
     for pos in pos {
         world.spawn((LightComponent::new(Light::Point(PointLight::new(pos, lc))),));
     }
 
-    //let mut count = 0f64;
+    executor.add_resource(0f64);
+    
+    let transforms = {
+        let inputs = inputs.clone();
+        move |count: &mut f64, gfx: &mut GraphicContext| {
+            *count += 1.0;
+            let mut changed = false;
+            let mut cam_pos = gfx.camera.get_position();
+            let mut cam_rot = gfx.camera.get_rotation();
+            let rot = {
+                let (y, _, _) = cam_rot.to_euler(EulerRot::YXZ);
+                Quat::from_euler(EulerRot::YXZ, y, 0.0, 0.0)
+            };
+            let fac = 0.01;
+            let scale = 0.001;
+            if inputs.is_pressed_keycode(VirtualKeyCode::Z) {
+                changed = true;
+                cam_pos += rot.mul_vec3(Vec3::new(0.0, 0.0, fac));
+            }
+            if inputs.is_pressed_keycode(VirtualKeyCode::Q) {
+                changed = true;
+                cam_pos += rot.mul_vec3(Vec3::new(-fac, 0.0, 0.0));
+            }
+            if inputs.is_pressed_keycode(VirtualKeyCode::S) {
+                changed = true;
+                cam_pos += rot.mul_vec3(Vec3::new(0.0, 0.0, -fac));
+            }
+            if inputs.is_pressed_keycode(VirtualKeyCode::D) {
+                changed = true;
+                cam_pos += rot.mul_vec3(Vec3::new(fac, 0.0, 0.0));
+            }
+            if inputs.is_pressed_keycode(VirtualKeyCode::Space) {
+                changed = true;
+                cam_pos += rot.mul_vec3(Vec3::new(0.0, fac, 0.0));
+            }
+            if inputs.is_pressed_keycode(VirtualKeyCode::Tab) {
+                changed = true;
+                cam_pos += rot.mul_vec3(Vec3::new(0.0, -fac, 0.0));
+            }
+            let delta = inputs.get_mouse_delta();
+            if delta.length_squared() > 0.0 {
+                changed = true;
+                let (mut y, mut x, _) = cam_rot.to_euler(EulerRot::YXZ);
+                x += delta.y * scale;
+                y += delta.x * scale;
+                x = x.clamp(-0.4999 * PI, 0.4999 * PI);
+                cam_rot = Quat::from_euler(EulerRot::YXZ, y, x, 0.0);
+            }
+            if changed {
+                gfx.camera.set_position(cam_pos);
+                gfx.camera.set_rotation(cam_rot);
+            }
+        }
+    };
+
     let schedule = executor
         .schedule()
         .then(lights_system)
+        .then(transforms)
         .then(graphic_system)
         .build();
+    let mut grabbed = false;
 
     event_loop.run(move |event, _, control_flow| match event {
         Event::RedrawRequested(id) if id == window.id() => {
-            //count += 1.0;
-
             executor.execute(&schedule, &mut world);
 
-            //ecs.get_component_mut::<TransformsComponent>(entity)
-            //    .unwrap()
-            //    .set_rotation(Quat::from_rotation_y((count as f32 / 300.0).cos()));
-            //ecs.get_component_mut::<TransformsComponent>(entity)
-            //    .unwrap()
-            //    .set_translation(Vec3::new(0.0, (count / 100.0).cos() as f32 / 2.0, 2.0));
             let gfx = executor.get_resource_mut::<GraphicContext>().unwrap();
 
             match gfx.feedback() {
@@ -132,6 +265,22 @@ async fn run(mut world: World, mut executor: Executor) {
                 .get_resource_mut::<GraphicContext>()
                 .unwrap()
                 .resize(**new_inner_size),
+            WindowEvent::CursorMoved { position, .. } => {
+                if grabbed {
+                    inputs.notify_mouse(*position);
+                    window.set_cursor_position(CENTER_POS).unwrap();
+                }
+            },
+            WindowEvent::Focused(_) => {
+                grabbed = !grabbed;
+                window.set_cursor_visible(!grabbed);
+                window.set_cursor_grab(grabbed).unwrap();
+            }
+            WindowEvent::KeyboardInput { input, .. } => {
+                if grabbed {
+                    inputs.notify(*input);
+                }
+            }
             _ => {}
         },
         _ => {}

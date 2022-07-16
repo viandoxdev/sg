@@ -8,7 +8,9 @@ struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) tex_coords: vec2<f32>,
     @location(1) world_position: vec3<f32>,
-    @location(2) TBN: mat3x3<f32>,
+    @location(2) tangent: vec3<f32>,
+    @location(3) bitangent: vec3<f32>,
+    @location(4) normal: vec3<f32>,
 }
 struct CameraInfo {
     view_proj: mat4x4<f32>,
@@ -30,13 +32,14 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     var tangent = normalize((pc.normal_mat * vec4<f32>(model.tangent, 0.0)).xyz);
     tangent = normalize(tangent - dot(tangent, normal) * normal);
     let bitangent = -cross(normal, tangent);
-    let TBN = mat3x3<f32>(tangent, bitangent, normal);
 
     var v_out: VertexOutput;
     v_out.world_position = (pc.model_mat * vec4<f32>(model.position, 1.0)).xyz;
     v_out.clip_position = cam.view_proj * vec4<f32>(v_out.world_position, 1.0);
     v_out.tex_coords = model.tex_coords;
-    v_out.TBN = TBN;
+    v_out.tangent = tangent;
+    v_out.bitangent = bitangent;
+    v_out.normal = normal;
     return v_out;
 }
 
@@ -54,8 +57,9 @@ struct FragmentOutput {
 
 @fragment
 fn fs_main(v_in: VertexOutput) -> FragmentOutput {
+    let TBN = mat3x3<f32>(v_in.tangent, v_in.bitangent, v_in.normal);
     var f_out: FragmentOutput;
-    let normal = normalize(v_in.TBN * (
+    let normal = normalize(TBN * (
         textureSample(textures[1], smpl, v_in.tex_coords).xyz * 2.0 - vec3<f32>(1.0)
     ));
     f_out.albedo = textureSample(textures[0], smpl, v_in.tex_coords);
