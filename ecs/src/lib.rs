@@ -13,11 +13,13 @@ mod system;
 mod thread_pool;
 mod world;
 
+pub use archetype::Component;
+pub use entity::Entity;
 pub use executor::Executor;
 pub use executor::Schedule;
 pub use executor::Scheduler;
 pub use system::Entities;
+pub use system::IntoSystem;
 pub use world::World;
-pub use entity::Entity;
 
-// TODO: Ids in queries (something like taking an Entity, by value -> taking the id).
+// TODO: Add component trait that requires 'static + Send + Sync

@@ -250,12 +250,16 @@ impl World {
     }
     fn query_iter<Q: Query>(&self, set: BorrowBitset) -> QueryIterBundle<Q> {
         let requirements = set.required();
-        let storages = self.archetypes.iter().enumerate().filter_map(|(index, (storage, set))| {
-            match *set & requirements == requirements {
-                true => Some((index, storage)),
-                false => None,
-            }
-        });
+        let storages = self
+            .archetypes
+            .iter()
+            .enumerate()
+            .filter_map(
+                |(index, (storage, set))| match *set & requirements == requirements {
+                    true => Some((index, storage)),
+                    false => None,
+                },
+            );
         // TODO: use with_capacity
         let mut iter = QueryIterBundle::new();
         for (index, storage) in storages {
@@ -305,7 +309,10 @@ impl Default for World {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::atomic::{AtomicU64, Ordering}, collections::HashSet};
+    use std::{
+        collections::HashSet,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     use crate::{Entities, Executor};
 
@@ -398,8 +405,7 @@ mod tests {
                 assert!(entities_id.contains(&entity));
             }
         };
-        let s = e.schedule().then(sys)
-            .build();
+        let s = e.schedule().then(sys).build();
         e.execute(&s, &mut w);
     }
 }

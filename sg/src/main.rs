@@ -6,22 +6,18 @@
 use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
-use ecs::{Executor, World, Entities};
-use glam::{Vec3, Vec4, Quat, Vec2, EulerRot};
+use ecs::{Executor, World};
+use glam::{EulerRot, Quat, Vec2, Vec3, Vec4};
 use parking_lot::RwLock;
-use slotmap::{SlotMap, SecondaryMap};
-use systems::graphics::{
-    gltf, graphic_system, lights_system, GraphicContext, Light, PointLight,
-};
+use slotmap::SlotMap;
+use systems::graphics::{gltf, graphic_system, lights_system, GraphicContext, Light, PointLight};
 use winit::dpi::PhysicalPosition;
-use winit::event::{Event, WindowEvent, KeyboardInput, ElementState, VirtualKeyCode, ScanCode};
+use winit::event::{ElementState, Event, KeyboardInput, ScanCode, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 
-use components::{LightComponent, TransformsComponent};
+use components::LightComponent;
 
 mod chess;
 pub mod components;
@@ -63,7 +59,6 @@ impl InputState {
         self.states.read().get(input).map(|e| *e.read())
     }
 
-
     fn get_state_by_keycode(&self, keycode: VirtualKeyCode) -> Option<ElementState> {
         self.get_state(self.get_input_by_keycode(keycode)?)
     }
@@ -73,11 +68,10 @@ impl InputState {
     }
 
     fn is_pressed_keycode(&self, keycode: VirtualKeyCode) -> bool {
-        if let Some(ElementState::Pressed) = self.get_state_by_keycode(keycode) {
-            true
-        } else {
-            false
-        }
+        matches!(
+            self.get_state_by_keycode(keycode),
+            Some(ElementState::Pressed)
+        )
     }
 
     fn notify(&self, input: KeyboardInput) {
@@ -98,7 +92,10 @@ impl InputState {
     }
 
     fn notify_mouse(&self, pos: PhysicalPosition<f64>) {
-        *self.mouse_delta.write() = Vec2::new(pos.x as f32 - CENTER_POS.x as f32, pos.y as f32 - CENTER_POS.y as f32);
+        *self.mouse_delta.write() = Vec2::new(
+            pos.x as f32 - CENTER_POS.x as f32,
+            pos.y as f32 - CENTER_POS.y as f32,
+        );
     }
 }
 
@@ -159,14 +156,14 @@ async fn run(mut world: World, mut executor: Executor) {
     //}
 
     let pos = [
-        Vec3::new( 1.0,  1.0, 6.0),
-        Vec3::new(-1.0,  1.0, 6.0),
+        Vec3::new(1.0, 1.0, 6.0),
+        Vec3::new(-1.0, 1.0, 6.0),
         Vec3::new(-1.0, -1.0, 6.0),
-        Vec3::new( 1.0, -1.0, 6.0),
-        Vec3::new( 1.0,  4.0, 6.0),
-        Vec3::new(-1.0,  4.0, 6.0),
-        Vec3::new(-1.0,  2.0, 6.0),
-        Vec3::new( 1.0,  2.0, 6.0),
+        Vec3::new(1.0, -1.0, 6.0),
+        Vec3::new(1.0, 4.0, 6.0),
+        Vec3::new(-1.0, 4.0, 6.0),
+        Vec3::new(-1.0, 2.0, 6.0),
+        Vec3::new(1.0, 2.0, 6.0),
     ];
     let lc = Vec4::splat(27.0);
     for pos in pos {
@@ -174,7 +171,7 @@ async fn run(mut world: World, mut executor: Executor) {
     }
 
     executor.add_resource(0f64);
-    
+
     let transforms = {
         let inputs = inputs.clone();
         move |count: &mut f64, gfx: &mut GraphicContext| {
@@ -270,7 +267,7 @@ async fn run(mut world: World, mut executor: Executor) {
                     inputs.notify_mouse(*position);
                     window.set_cursor_position(CENTER_POS).unwrap();
                 }
-            },
+            }
             WindowEvent::Focused(_) => {
                 grabbed = !grabbed;
                 window.set_cursor_visible(!grabbed);

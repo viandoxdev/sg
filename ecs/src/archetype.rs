@@ -11,7 +11,8 @@ use ecs_macros::impl_archetype;
 
 use crate::{
     bitset::{ArchetypeBitset, ArchetypeBitsetBuilder, ArchetypeBitsetMapping, BitsetBuilder},
-    query::{Query, QueryIter}, entity::LocationMap,
+    entity::LocationMap,
+    query::{Query, QueryIter},
 };
 
 type DropInPlace = fn(*mut ());
@@ -99,11 +100,11 @@ impl Archetype {
         true
     }
     /// Get the offset of the value of a type in the memory layout of this archetype
-    pub fn offset<T: 'static>(&self) -> usize {
+    pub fn offset<T: Component>(&self) -> usize {
         self.info[&TypeId::of::<T>()].offset
     }
     /// Check if the archetype contains a type
-    pub fn has<T: 'static>(&self) -> bool {
+    pub fn has<T: Component>(&self) -> bool {
         self.info.contains_key(&TypeId::of::<T>())
     }
     /// Copy the components from a location with this archetype to another location following
@@ -307,7 +308,11 @@ impl ArchetypeStorage {
     }
     /// Create an QueryIter of this storage, this doesn't have any memory safety checks and will
     /// break if used after drop of this storage, or if used concurently.
-    pub unsafe fn iter_query<Q: Query>(&self, index: usize, location_map: Option<&LocationMap>) -> QueryIter<Q> {
+    pub unsafe fn iter_query<Q: Query>(
+        &self,
+        index: usize,
+        location_map: Option<&LocationMap>,
+    ) -> QueryIter<Q> {
         QueryIter::new(
             self.data,
             self.length,
@@ -388,6 +393,9 @@ pub trait IntoArchetype {
     /// Get a vec of the TypeIds of the types composing the archetype
     fn types() -> Vec<TypeId>;
 }
+
+pub trait Component: 'static + Send {}
+impl<T: 'static + Send> Component for T {}
 
 // Implement IntoArchetype for generic tuples of length 0 to 16
 // see ecs_macros for implementation
@@ -527,7 +535,8 @@ mod tests {
         at.push((12u8, 34i32, "str".to_owned(), (), false));
         at.push((25i32, "abc".to_owned(), (), 17u8, true));
         at.push(("bob".to_owned(), (), 99u8, 68i32, false));
-        let mut iter = unsafe { at.iter_query::<(&String, &i32, Option<&bool>, Option<&u128>)>(0, None) };
+        let mut iter =
+            unsafe { at.iter_query::<(&String, &i32, Option<&bool>, Option<&u128>)>(0, None) };
 
         eq!(Some(("str", 34i32, Some(false), None)), iter.next());
         eq!(Some(("abc", 25i32, Some(true), None)), iter.next());

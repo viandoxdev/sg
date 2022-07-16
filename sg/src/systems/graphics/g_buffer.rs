@@ -366,7 +366,11 @@ impl GBuffer {
         self.update_bindgroup(device);
     }
 
-    pub fn update_lights<'a>(&mut self, device: &wgpu::Device, lights: impl IntoIterator<Item = &'a Light>) -> Result<(), u32> {
+    pub fn update_lights<'a>(
+        &mut self,
+        device: &wgpu::Device,
+        lights: impl IntoIterator<Item = &'a Light>,
+    ) -> Result<(), u32> {
         let (lights_buffer, overflow) = Self::make_lights_buffer(device, lights, self.max_lights);
         self.lights_buffer = lights_buffer;
         self.update_bindgroup(device);

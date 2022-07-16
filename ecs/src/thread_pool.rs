@@ -1,4 +1,5 @@
 use std::{
+    fmt::Debug,
     marker::PhantomData,
     sync::{atomic::AtomicU32, mpsc, Arc},
     thread::{self, JoinHandle},
@@ -23,17 +24,27 @@ enum Action<J: Job> {
     Stop,
 }
 
+impl<J: Job> Debug for Action<J> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Action::Job(..) => write!(f, "Action::Job"),
+            Action::Stop => write!(f, "Action::Stop"),
+        }
+    }
+}
+
 impl<J: Job> Worker<J> {
-    fn new(actions: Arc<Mutex<Receiver<Action<J>>>>) -> Self {
+    fn new(actions: Arc<Mutex<Receiver<Action<J>>>>, id: u64) -> Self {
         Self {
             thread: thread::spawn(move || {
-                // If recv returns an Error, then the sender has been lost and all workes should
-                // exit. If the returned job is None, then thte worker should exit (None being the
-                // close signal)?
+                log::trace!("Worker({id}): Started");
+                log::trace!("Worker({id}): Listening for action");
                 while let Ok(action) = actions.lock().recv() {
+                    log::trace!("Worker({id}): Got action {action:?}");
                     match action {
                         Action::Job(job, wait) => {
                             job.execute();
+                            log::trace!("Worker({id}): Finished job");
                             // Notify once we're done
                             wait.notify();
                         }
@@ -42,6 +53,7 @@ impl<J: Job> Worker<J> {
                         }
                     }
                 }
+                log::trace!("Worker({id}): Stopping");
             }),
             _phantom: PhantomData,
         }
@@ -65,8 +77,12 @@ impl<J: Job> ThreadPool<J> {
     }
     /// Add count workers to the pool
     pub fn add_workers(&mut self, count: usize) {
+        let mut ids = (self.worker_count() as u64)..;
         self.workers.extend(
-            std::iter::repeat_with(|| Worker::new(self.actions_receiver.clone())).take(count),
+            std::iter::repeat_with(|| {
+                Worker::new(self.actions_receiver.clone(), ids.next().unwrap())
+            })
+            .take(count),
         );
     }
     /// Ensures that the thread pool has at least count workers

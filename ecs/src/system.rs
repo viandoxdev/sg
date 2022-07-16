@@ -1,6 +1,6 @@
 use crate::{
     bitset::{BitsetBuilder, BorrowBitset, BorrowBitsetBuilder, BorrowBitsetMapping},
-    executor::ExecutionContext,
+    executor::{ExecutionContext, Resource},
     query::{Query, QueryIterBundle},
 };
 use ecs_macros::impl_system;
@@ -83,11 +83,12 @@ impl<Q: Query> SystemArgument for Entities<Q> {
         builder
     }
     unsafe fn fetch(context: &ExecutionContext) -> Self {
+        log::trace!("SystemArgument: Fetching Query");
         std::mem::transmute(context.world.query_unchecked::<Q>())
     }
 }
 
-impl<'r, T: 'static> SystemArgument for &'r T {
+impl<'r, T: Resource> SystemArgument for &'r T {
     fn register(mappings: &mut RequirementsMappings) {
         if !mappings.resources.has(&TypeId::of::<T>()) {
             mappings.resources.map(TypeId::of::<T>());
@@ -98,6 +99,7 @@ impl<'r, T: 'static> SystemArgument for &'r T {
         builder
     }
     unsafe fn fetch(context: &ExecutionContext) -> Self {
+        log::trace!("SystemArgument: Fetching &Resource");
         let res = context
             .executor
             .get_resource::<T>()
@@ -107,7 +109,7 @@ impl<'r, T: 'static> SystemArgument for &'r T {
     }
 }
 
-impl<'r, T: 'static> SystemArgument for &'r mut T {
+impl<'r, T: Resource> SystemArgument for &'r mut T {
     fn register(mappings: &mut RequirementsMappings) {
         if !mappings.resources.has(&TypeId::of::<T>()) {
             mappings.resources.map(TypeId::of::<T>());
@@ -118,6 +120,7 @@ impl<'r, T: 'static> SystemArgument for &'r mut T {
         builder
     }
     unsafe fn fetch(context: &ExecutionContext) -> Self {
+        log::trace!("SystemArgument: Fetching &mut Resource");
         let res = context
             .executor
             .get_resource_mut_unchecked::<T>()

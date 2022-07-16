@@ -129,7 +129,8 @@ impl<'a> Shader {
 pub struct Pipeline {
     layout: wgpu::PipelineLayout,
     build: Box<
-        dyn Fn(&wgpu::Device, &wgpu::PipelineLayout, &wgpu::ShaderModule) -> wgpu::RenderPipeline,
+        dyn Fn(&wgpu::Device, &wgpu::PipelineLayout, &wgpu::ShaderModule) -> wgpu::RenderPipeline
+            + Send,
     >,
     pub pipeline: wgpu::RenderPipeline,
     pub shader: Shader,
@@ -144,7 +145,8 @@ impl Pipeline {
     ) -> Self
     where
         F: Fn(&wgpu::Device, &wgpu::PipelineLayout, &wgpu::ShaderModule) -> wgpu::RenderPipeline
-            + 'static,
+            + 'static
+            + Send,
     {
         let pipeline = build(device, &layout, &shader.module(device));
         let build = Box::new(build);

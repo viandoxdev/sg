@@ -1,9 +1,6 @@
 use glam::{Mat4, Quat, Vec3};
 
-use crate::systems::graphics::{
-    mesh_manager::MeshHandle,
-    Light, Material,
-};
+use crate::systems::graphics::{mesh_manager::MeshHandle, Light, Material};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PositionComponent {
@@ -24,9 +21,7 @@ pub struct LightComponent {
 
 impl LightComponent {
     pub fn new(light: Light) -> Self {
-        Self {
-            light,
-        }
+        Self { light }
     }
 }
 

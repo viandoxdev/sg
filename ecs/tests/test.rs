@@ -1,20 +1,23 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
-use ecs::{Entities, Executor, World, Entity};
+use ecs::{Entities, Entity, Executor, World};
 
 fn print_system(entities: Entities<&i32>, res: &i32) {
+    log::debug!("PRINT SYSTEM");
     for int in entities {
         println!("print sys {int} ({res})");
     }
 }
 
 fn bool_system(entities: Entities<&bool>) {
+    log::debug!("BOOL SYSTEM");
     for b in entities {
         assert!(b);
     }
 }
 
 fn increment_system(entities: Entities<&mut i32>, res: &mut i32) {
+    log::debug!("INCREMENT SYSTEM");
     *res += 1;
     for i in entities {
         *i += 1;
@@ -22,6 +25,7 @@ fn increment_system(entities: Entities<&mut i32>, res: &mut i32) {
 }
 
 fn assert_system(entities: Entities<(&i32, &u8)>, res: &i32) {
+    log::debug!("ASSERT SYSTEM");
     assert_eq!(*res, 4);
     let mut entities = entities.map(|(i, u)| (*i, *u)).collect::<Vec<_>>();
     entities.sort_by_key(|(_, u)| *u);
@@ -33,6 +37,8 @@ fn assert_system(entities: Entities<(&i32, &u8)>, res: &i32) {
 
 #[test]
 fn basic() {
+    env_logger::init();
+
     let mut world = World::new();
     let mut executor = Executor::new();
 
@@ -42,8 +48,10 @@ fn basic() {
     let entities = [
         world.spawn((12, true, 0u8)),
         world.spawn((420, true, 1u8)),
-        world.spawn((56, 2u8))
-    ].into_iter().collect::<HashSet<_>>();
+        world.spawn((56, 2u8)),
+    ]
+    .into_iter()
+    .collect::<HashSet<_>>();
 
     let schedule = executor
         .schedule()
@@ -52,23 +60,22 @@ fn basic() {
         .then(print_system)
         .build();
 
-    let assert = executor.schedule().then(assert_system).build();
-
     for _ in 0..4 {
         executor.execute(&schedule, &mut world);
     }
 
+    let assert = executor.schedule_single(assert_system);
     executor.execute(&assert, &mut world);
 
-    let list = move |e: Entities<Entity>| {
-        let es = e.collect::<Vec<_>>();
-        assert_eq!(es.len(), entities.len());
-        for entity in &es {
-            println!("Entity {entity:?}");
-            assert!(entities.contains(entity));
-        }
-    };
-
-    let list_s = executor.schedule().then(list).build();
-    executor.execute(&list_s, &mut world);
+    executor.execute_single(
+        move |e: Entities<Entity>| {
+            let es = e.collect::<Vec<_>>();
+            assert_eq!(es.len(), entities.len());
+            for entity in &es {
+                println!("Entity {entity:?}");
+                assert!(entities.contains(entity));
+            }
+        },
+        &mut world,
+    );
 }

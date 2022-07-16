@@ -3,8 +3,9 @@ use std::{any::TypeId, marker::PhantomData, ptr::NonNull};
 use ecs_macros::impl_query;
 
 use crate::{
-    archetype::Archetype,
-    bitset::{BitsetBuilder, BorrowBitset, BorrowBitsetBuilder, BorrowBitsetMapping}, entity::{Entity, LocationMap, Location},
+    archetype::{Archetype, Component},
+    bitset::{BitsetBuilder, BorrowBitset, BorrowBitsetBuilder, BorrowBitsetMapping},
+    entity::{Entity, Location, LocationMap},
 };
 
 /// A single query used in a tuple
@@ -43,7 +44,7 @@ impl QuerySingle for Entity {
     }
 }
 
-impl<T: 'static> QuerySingle for &T {
+impl<T: Component> QuerySingle for &T {
     fn match_archetype(archetype: &Archetype) -> bool {
         archetype.has::<T>()
     }
@@ -58,7 +59,7 @@ impl<T: 'static> QuerySingle for &T {
     }
 }
 
-impl<T: 'static> QuerySingle for &mut T {
+impl<T: Component> QuerySingle for &mut T {
     fn match_archetype(archetype: &Archetype) -> bool {
         archetype.has::<T>()
     }
@@ -73,7 +74,7 @@ impl<T: 'static> QuerySingle for &mut T {
     }
 }
 
-impl<T: 'static> QuerySingle for Option<&T> {
+impl<T: Component> QuerySingle for Option<&T> {
     fn match_archetype(_archetype: &Archetype) -> bool {
         true
     }
@@ -92,7 +93,7 @@ impl<T: 'static> QuerySingle for Option<&T> {
     }
 }
 
-impl<T: 'static> QuerySingle for Option<&mut T> {
+impl<T: Component> QuerySingle for Option<&mut T> {
     fn match_archetype(_archetype: &Archetype) -> bool {
         true
     }
@@ -177,12 +178,14 @@ impl<Q: Query> Iterator for QueryIter<Q> {
                 entity: self.current,
                 archetype: self.storage_index,
             };
-            let entity = unsafe { 
-                self.location_map.map(
-                    |location_map| {
-                        (&*location_map).get_entity(loc).expect("Iterating over unregistered entity")
+            let entity = unsafe {
+                self.location_map
+                    .map(|location_map| {
+                        (&*location_map)
+                            .get_entity(loc)
+                            .expect("Iterating over unregistered entity")
                     })
-                .unwrap_or(Entity::default())
+                    .unwrap_or_default()
             };
             let ptr = unsafe {
                 self.data

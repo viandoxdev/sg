@@ -66,10 +66,9 @@ pub fn impl_archetype(input: proc_macro::TokenStream) -> proc_macro::TokenStream
             } else {
                 quote!(())
             };
-            // eg "A: 'static, B: 'static"
             let generics = if count > 0 {
                 let types = types.clone();
-                quote!(<#(#types: 'static),*>)
+                quote!(<#(#types: Component),*>)
             } else {
                 quote!()
             };

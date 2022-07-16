@@ -131,3 +131,9 @@ impl LocationMap {
         self.locations.get(&loc).copied()
     }
 }
+
+impl Default for LocationMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -1,7 +1,7 @@
 use std::{
     any::{Any, TypeId},
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{atomic::AtomicU64, Arc},
 };
 
 use slotmap::{SecondaryMap, SlotMap};
@@ -35,12 +35,15 @@ impl Job for ExecutorJob {
         for step in self.steps {
             match step {
                 Step::Wait(index) => {
+                    log::trace!("ExecutorWorker: Waiting ({index})");
                     self.waits[index].wait();
                 }
                 Step::Notify(index) => {
+                    log::trace!("ExecutorWorker: notifying ({index})");
                     self.waits[index].notify();
                 }
                 Step::Run(id) => {
+                    log::trace!("ExecutorWorker: running ({id:?})");
                     let system = self.context.executor.get_system(id).unwrap();
                     // SAFETY: Run Steps only exist in schedules, and schedules enforce no
                     // aliasing.
@@ -53,13 +56,49 @@ impl Job for ExecutorJob {
     }
 }
 
+pub trait Resource: 'static + Any + Send {
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+impl<T: 'static + Any + Send> Resource for T {
+    #[inline(always)]
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    #[inline(always)]
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
 slotmap::new_key_type! {
     pub struct SystemId;
 }
 
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct ExecutorId {
+    id: u64,
+}
+
+static EXECUTOR_IDS: AtomicU64 = AtomicU64::new(0);
+impl ExecutorId {
+    fn new() -> Self {
+        Self {
+            id: EXECUTOR_IDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+        }
+    }
+}
+
+impl Default for ExecutorId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A struct holding systems and resources
 pub struct Executor {
-    resources: HashMap<TypeId, Box<dyn Any>>,
+    id: ExecutorId,
+    resources: HashMap<TypeId, Box<dyn Resource>>,
     systems: SlotMap<SystemId, System>,
     mappings: RequirementsMappings,
     thread_pool: ThreadPool<ExecutorJob>,
@@ -68,6 +107,7 @@ pub struct Executor {
 impl Executor {
     pub fn new() -> Self {
         Self {
+            id: ExecutorId::new(),
             resources: HashMap::new(),
             systems: SlotMap::with_key(),
             mappings: RequirementsMappings::new(),
@@ -75,7 +115,7 @@ impl Executor {
         }
     }
 
-    pub fn add_resource<T: Any>(&mut self, res: T) {
+    pub fn add_resource<T: Resource>(&mut self, res: T) {
         if self.resources.contains_key(&TypeId::of::<T>()) {
             panic!(
                 "Trying to add resource that is already in executor: {}",
@@ -85,10 +125,11 @@ impl Executor {
         self.resources.insert(res.type_id(), Box::new(res));
     }
 
-    pub fn get_resource<T: Any>(&self) -> Option<&T> {
+    pub fn get_resource<T: Resource>(&self) -> Option<&T> {
         self.resources
             .get(&TypeId::of::<T>())
-            .and_then(|boxed| boxed.downcast_ref::<T>())
+            // For some reason the as_ref here is absolutely necessary
+            .and_then(|boxed| boxed.as_ref().as_any().downcast_ref::<T>())
     }
     /// Get a mutable reference to a resource without any checks for aliasing.
     ///
@@ -96,17 +137,18 @@ impl Executor {
     ///
     /// This bypasses rust aliasing checks, and is UB if the resource is already borrowed somewhere
     /// else.
-    pub unsafe fn get_resource_mut_unchecked<T: Any>(&self) -> Option<&mut T> {
+    pub unsafe fn get_resource_mut_unchecked<T: Resource>(&self) -> Option<&mut T> {
         #[allow(clippy::cast_ref_to_mut)]
         let s = &mut *(self as *const Self as *mut Self);
         s.resources
             .get_mut(&TypeId::of::<T>())
-            .and_then(|boxed| boxed.downcast_mut::<T>())
+            // For some reason the as_mut here is absolutely necessary
+            .and_then(|boxed| boxed.as_mut().as_any_mut().downcast_mut::<T>())
     }
-    pub fn get_resource_mut<T: Any>(&mut self) -> Option<&mut T> {
+    pub fn get_resource_mut<T: Resource>(&mut self) -> Option<&mut T> {
         self.resources
             .get_mut(&TypeId::of::<T>())
-            .and_then(|boxed| boxed.downcast_mut::<T>())
+            .and_then(|boxed| boxed.as_mut().as_any_mut().downcast_mut::<T>())
     }
     /// Get a scheduler used to build a schedule
     pub fn schedule(&mut self) -> Scheduler {
@@ -115,14 +157,31 @@ impl Executor {
             systems: Vec::new(),
         }
     }
-    fn add_system<A>(&mut self, sys: impl IntoSystem<A>) -> SystemId {
+    /// Create a schedule for a single system
+    pub fn schedule_single<A>(&mut self, sys: impl IntoSystem<A>) -> Schedule {
+        self.schedule().then(sys).build()
+    }
+    /// Add a system to an executor. This should only be used when storing systems isn't possible
+    /// and one needs a genericles handle to a system.
+    ///
+    /// # Note
+    ///
+    /// Calling this multiple times with the same system returns a new id every time.
+    pub fn add_system<A>(&mut self, sys: impl IntoSystem<A>) -> SystemId {
         self.systems.insert(sys.into_system(&mut self.mappings))
     }
     fn get_system(&self, sys: SystemId) -> Option<&System> {
         self.systems.get(sys)
     }
     /// Run a given schedule against this executor and a world
+    ///
+    /// # Panics
+    ///
+    /// Panics if the schedule wasn't built from this executor
     pub fn execute(&mut self, schedule: &Schedule, world: &mut World) {
+        if schedule.executor_id != self.id {
+            panic!("Schedule wasn't built from correct executor");
+        }
         // Make sure we have enough workers
         self.thread_pool.ensure_workers(schedule.threads.len());
 
@@ -142,6 +201,19 @@ impl Executor {
 
         self.thread_pool.run_many(jobs).wait();
     }
+    /// Execute a single system, note that the prefered mean of execution should be a schedule.
+    pub fn execute_single<A>(&mut self, sys: impl IntoSystem<A>, world: &mut World) {
+        let sys = sys.into_system(&mut self.mappings);
+        let context = ExecutionContext {
+            executor: self,
+            world,
+        };
+        // SAFETY: mutable borrow of both the world and the executor guarentee no aliasing for the
+        // system.
+        unsafe {
+            sys.run(&context);
+        }
+    }
 }
 
 pub struct Scheduler<'a> {
@@ -150,10 +222,32 @@ pub struct Scheduler<'a> {
 }
 
 impl<'a> Scheduler<'a> {
-    /// Add a system to the building schedule, a schedule can't contain the same system twice.
+    /// Add a system to the building schedule
     pub fn then<A>(mut self, sys: impl IntoSystem<A>) -> Self {
         self.systems.push(self.executor.add_system(sys));
         self
+    }
+    /// Add a registred system to the building schedule. This sould be avoided in favor of
+    /// Scheduler::then.
+    ///
+    /// # Panics
+    ///
+    /// This panics if the system is already in the schedule, or if the system isn't registered in
+    /// the executor.
+    pub fn then_by_id(mut self, sys: SystemId) -> Self {
+        if self.executor.get_system(sys).is_none() {
+            panic!("System isn't registered in executor");
+        }
+        if self.systems.contains(&sys) {
+            panic!("System is already in schedule");
+        }
+        self.systems.push(sys);
+        self
+    }
+    /// Run the closure F with the scheduler
+    #[inline(always)]
+    pub fn with<F: FnOnce(Self) -> Self>(self, f: F) -> Self {
+        f(self)
     }
     /// Create a schedule from the added systems, the schedule is parallelized as much as possible
     /// while keeping the same behaviour as if the systems were run sequentially.
@@ -164,6 +258,7 @@ impl<'a> Scheduler<'a> {
     pub fn build(mut self) -> Schedule {
         if self.systems.is_empty() {
             return Schedule {
+                executor_id: self.executor.id,
                 threads: Arc::new(Vec::new()),
                 waits: Arc::new(Vec::new()),
             };
@@ -347,6 +442,7 @@ impl<'a> Scheduler<'a> {
             }
         }
         Schedule {
+            executor_id: self.executor.id,
             threads: Arc::new(threads),
             waits: Arc::new(waits),
         }
@@ -370,6 +466,7 @@ enum Step {
 }
 
 pub struct Schedule {
+    executor_id: ExecutorId,
     threads: Arc<Vec<Vec<Step>>>,
     waits: Arc<Vec<Wait>>,
 }

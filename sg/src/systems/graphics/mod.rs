@@ -181,7 +181,10 @@ pub fn lights_system(ctx: &mut GraphicContext, lights: Entities<(Entity, &LightC
         ctx.lights_cache.clear();
         ctx.lights_cache.extend(lights.iter().map(|(id, _)| id));
         // TODO make this take an impl IntoIterator
-        if let Err(overflow) = ctx.g_buffer.update_lights(&ctx.device, lights.iter().map(|(_, light)| &light.light)) {
+        if let Err(overflow) = ctx
+            .g_buffer
+            .update_lights(&ctx.device, lights.iter().map(|(_, light)| &light.light))
+        {
             let current_max = ctx
                 .shading_pipeline
                 .shader

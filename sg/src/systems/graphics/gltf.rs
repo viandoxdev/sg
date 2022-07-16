@@ -2,9 +2,9 @@ use std::{num::NonZeroU32, path::Path};
 
 use anyhow::{Context, Result};
 use glam::{Quat, Vec2, Vec3};
-use gltf::Node;
 use gltf::image::Data as ImageData;
 use gltf::image::Format;
+use gltf::Node;
 
 use crate::components::{GraphicsComponent, TransformsComponent};
 use crate::systems::graphics::mesh_manager::MeshHandle;
@@ -176,7 +176,7 @@ fn load_image(gfx: &mut GraphicContext, image: &mut ImageData, srgb: bool) -> wg
             let mut new = Vec::with_capacity(data.len() / 6 * 8);
             for rgb in data.chunks(6) {
                 new.extend_from_slice(rgb);
-                new.extend_from_slice(&[255;2]);
+                new.extend_from_slice(&[255; 2]);
             }
             data = new;
             log::trace!("image loading - format converted");
@@ -467,17 +467,15 @@ pub fn open<P: AsRef<Path>>(
         default_material_index: usize,
         materials: &Vec<Option<Material>>,
         mesh_handles: &Vec<Vec<MeshHandle>>,
-        entities: &mut Vec<(GraphicsComponent,
-        TransformsComponent)>,
-    ) -> Result<()>
-    {
+        entities: &mut Vec<(GraphicsComponent, TransformsComponent)>,
+    ) -> Result<()> {
         log::trace!("  scene: getting node transforms");
         let (translation, rotation, scale) = node.transform().decomposed();
         let mut tsm = TransformsComponent::new();
         tsm.set_translation(Vec3::from(translation));
         tsm.set_rotation(Quat::from_array(rotation));
         tsm.set_scale(Vec3::from(scale));
-        tsm.apply(&parent_tsm);
+        tsm.apply(parent_tsm);
         if let Some(mesh) = node.mesh() {
             log::trace!("    - has mesh, making entities");
             for (index, primitive) in mesh.primitives().enumerate() {
@@ -496,14 +494,28 @@ pub fn open<P: AsRef<Path>>(
         }
         log::trace!("    - iterating over children");
         for node in node.children() {
-            process_node(node, &tsm, default_material_index, materials, mesh_handles, entities)?;
+            process_node(
+                node,
+                &tsm,
+                default_material_index,
+                materials,
+                mesh_handles,
+                entities,
+            )?;
         }
         Ok(())
     }
 
     for scene in doc.scenes() {
         for node in scene.nodes() {
-            process_node(node, &TransformsComponent::default(), default_material_index, &materials, &mesh_handles, &mut entities)?;
+            process_node(
+                node,
+                &TransformsComponent::default(),
+                default_material_index,
+                &materials,
+                &mesh_handles,
+                &mut entities,
+            )?;
         }
     }
     log::trace!("Processing gltf - done");
