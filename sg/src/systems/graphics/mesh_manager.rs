@@ -161,13 +161,21 @@ impl Primitives for Mesh {
         const O: f32 = 0.0000000;
         const H: f32 = 0.5257311;
         const L: f32 = 0.8506508;
+        // Compute the tangent for a given normal. Since icosphere don't have UVS (applying a
+        // texture on one will pretty much never work), the tangents don't need to be "right".
+        // They do, however need to at least be perpendicular to the normal, because setting them
+        // to 0 causes NaNs in the shader (because expressing 0 in a normal map isn't possible, as
+        // the values are in the range 0..255, mapped to -1 -> 1, and 127 -> < 0, but 128 -> > 0)
+        fn tan(v: Vec3) -> Vec3 {
+            v.cross(v + 1.0).normalize()
+        }
         macro_rules! v {
             ($a:expr, $b:expr, $c:expr) => {
                 Vertex {
                     position: Vec3::new($a, $b, $c),
                     normal: Vec3::new($a, $b, $c),
                     tex_coords: Vec2::ZERO,
-                    tangent: Vec3::ZERO,
+                    tangent: tan(Vec3::new($a, $b, $c)),
                 }
             };
             ($v:ident) => {
@@ -175,7 +183,7 @@ impl Primitives for Mesh {
                     position: $v,
                     normal: $v,
                     tex_coords: Vec2::ZERO,
-                    tangent: Vec3::ONE,
+                    tangent: tan($v),
                 }
             };
         }
@@ -194,26 +202,26 @@ impl Primitives for Mesh {
             v![-L, O, -H],
         ];
         let mut indices: Vec<[u32; 3]> = vec![
-            [0, 1, 2],
-            [2, 3, 0],
-            [2, 1, 4],
-            [2, 5, 3],
-            [5, 2, 4],
-            [6, 7, 8],
-            [6, 9, 7],
-            [6, 8, 10],
-            [6, 11, 9],
-            [10, 11, 6],
-            [0, 10, 1],
-            [0, 3, 11],
-            [0, 11, 10],
-            [7, 4, 8],
-            [7, 9, 5],
-            [7, 5, 4],
-            [9, 11, 3],
-            [9, 3, 5],
-            [1, 10, 8],
-            [1, 8, 4],
+            [ 0,  2,  1],
+            [ 2,  0,  3],
+            [ 2,  4,  1],
+            [ 2,  3,  5],
+            [ 5,  4,  2],
+            [ 6,  8,  7],
+            [ 6,  7,  9],
+            [ 6, 10,  8],
+            [ 6,  9, 11],
+            [10,  6, 11],
+            [ 0,  1, 10],
+            [ 0, 11,  3],
+            [ 0, 10, 11],
+            [ 7,  8,  4],
+            [ 7,  5,  9],
+            [ 7,  4,  5],
+            [ 9,  3, 11],
+            [ 9,  5,  3],
+            [ 1,  8, 10],
+            [ 1,  4,  8],
         ];
         for _ in 0..detail {
             for _ in 0..indices.len() {

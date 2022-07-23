@@ -273,3 +273,47 @@ pub fn impl_system(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     });
     quote!(#(#impls)*).into()
 }
+
+#[proc_macro]
+pub fn impl_res_query(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let count = parse_macro_input!(input as Count).count;
+    let impls = (0..=count).map(|count| {
+        let types = (0..=count).map(|v| n_to_type(v, count));
+        let generics = {
+            let types = types.clone();
+            quote!(<'a, #(#types: ResourceQuerySingle<'a>),*>)
+        };
+        let tuple = {
+            let types = types.clone();
+            quote!((#(#types),*,))
+        };
+        let borrows = {
+            let types = types.clone();
+            quote!([#(#types::borrow()),*])
+        };
+        quote! {
+            impl #generics ResourceQuery<'a> for #tuple {
+                fn fetch(executor: &'a mut Executor) -> Option<Self> {
+                    use std::collections::HashMap;
+                    let mut muts = HashMap::with_capacity(#count as usize);
+                    for (t, n, m) in #borrows {
+                        if let Some((name, mutable)) = muts.get(&t) {
+                            // If either one is mutable
+                            if *mutable || m {
+                                panic!("Aliasing problem in query on {}", name);
+                            }
+                        }   
+                        muts.insert(t, (n, m));
+                    }
+
+                    Some(unsafe {(
+                        #(
+                            #types::fetch(executor)?
+                        ),*,
+                    )})
+                }
+            }
+        }
+    });
+    quote!(#(#impls)*).into()
+}

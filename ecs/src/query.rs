@@ -1,11 +1,11 @@
 use std::{any::TypeId, marker::PhantomData, ptr::NonNull};
 
-use ecs_macros::impl_query;
+use ecs_macros::{impl_query, impl_res_query};
 
 use crate::{
     archetype::{Archetype, Component},
     bitset::{BitsetBuilder, BorrowBitset, BorrowBitsetBuilder, BorrowBitsetMapping},
-    entity::{Entity, Location, LocationMap},
+    entity::{Entity, Location, LocationMap}, Executor, executor::Resource,
 };
 
 /// A single query used in a tuple
@@ -239,3 +239,35 @@ impl<Q: Query> Iterator for QueryIterBundle<Q> {
         }
     }
 }
+
+trait ResourceQuerySingle<'a>: Sized + 'a {
+    fn borrow() -> (TypeId, &'static str, bool);
+    unsafe fn fetch(executor: &'a Executor) -> Option<Self>;
+}
+
+impl<'a, T: Resource> ResourceQuerySingle<'a> for &'a T {
+    fn borrow() -> (TypeId, &'static str, bool) {
+        (TypeId::of::<T>(), std::any::type_name::<T>(), false)
+    }
+    unsafe fn fetch(executor: &'a Executor) -> Option<Self> {
+        executor.get_resource::<T>()
+    }
+}
+
+impl<'a, T: Resource> ResourceQuerySingle<'a> for &'a mut T {
+    fn borrow() -> (TypeId, &'static str, bool) {
+        (TypeId::of::<T>(), std::any::type_name::<T>(), true)
+    }
+    unsafe fn fetch(executor: &'a Executor) -> Option<Self> {
+        executor.get_resource_mut_unchecked::<T>()
+    }
+}
+
+pub trait ResourceQuery<'a>: 'a + Sized {
+    fn fetch(executor: &'a mut Executor) -> Option<Self>;
+}
+
+#[cfg(not(feature = "extended_limits"))]
+impl_res_query!(16);
+#[cfg(feature = "extended_limits")]
+impl_res_query!(24);

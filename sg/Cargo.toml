@@ -11,14 +11,14 @@ ecs = { path = "../ecs" }
 pollster = "0.2.5"
 uuid = {version = "1.0.0", features = ["v4", "fast-rng"]}
 log = "0.4.16"
-pretty_env_logger = "0.4.0"
+env_logger = "0.9.0"
 anyhow = "1.0.57"
 winit = "0.26"
 slotmap = "1.0.6"
 bytemuck = { version = "1.4", features = [ "derive" ] }
 glam = { version = "0.20", features = ["bytemuck"] }
 image = "0.24"
-parking_lot = "0.12.0"
+parking_lot = "0.12.1"
 rsa = "0.6.1"
 sha2 = "0.10.2"
 rand = "0.8.5"
@@ -26,4 +26,18 @@ mio = { version = "0.8.3", features = ["net", "os-poll"] }
 regex = "1.5"
 codespan-reporting = "0.11"
 gltf = { version = "1.0", features = ["KHR_lights_punctual"] }
-wgpu = { version = "0.13.1", features = ["trace"] }
+wgpu = { version = "0.13.1", features = [] }
+bimap = "0.6.2"
+half = { version = "2.1.0", features = ["bytemuck"] }
+
+[dependencies.egui-winit]
+git = "https://github.com/emilk/egui"
+rev = "c062bca6eeac3c8db3aecfbaa99172e1c74da9fc"
+
+[dependencies.egui]
+git = "https://github.com/emilk/egui"
+rev = "c062bca6eeac3c8db3aecfbaa99172e1c74da9fc"
+
+[dependencies.egui-wgpu]
+git = "https://github.com/emilk/egui"
+rev = "c062bca6eeac3c8db3aecfbaa99172e1c74da9fc"

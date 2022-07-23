@@ -1,6 +1,7 @@
 use std::{f32::consts::FRAC_PI_2, lazy::OnceCell};
 
 use glam::{Mat4, Quat, Vec3};
+use wgpu::util::DeviceExt;
 
 #[derive(Clone, Copy)]
 pub enum Projection {
@@ -13,8 +14,9 @@ pub enum Projection {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct CameraInfo {
     view_projection: Mat4,
+    view: Mat4,
     camera_pos: Vec3,
-    padding: f32,
+    aspect: f32,
 }
 
 pub struct Camera {
@@ -26,10 +28,13 @@ pub struct Camera {
     projection: Projection,
     aspect: f32,
     matrix: Mat4,
+    view_mat: Mat4,
     dirty: bool,
     buffer: OnceCell<wgpu::Buffer>,
     bind_group: OnceCell<wgpu::BindGroup>,
     bind_group_layout: OnceCell<wgpu::BindGroupLayout>,
+    skybox: OnceCell<wgpu::TextureView>,
+    irradiance_map: OnceCell<wgpu::TextureView>
 }
 
 impl Camera {
@@ -73,6 +78,16 @@ impl Camera {
         self.aspect = aspect;
         self.set_dirty();
     }
+    pub fn set_skybox(&mut self, skybox: wgpu::TextureView) {
+        self.skybox.take();
+        self.skybox.set(skybox).ok();
+        self.bind_group.take();
+    }
+    pub fn set_irradiance_map(&mut self, irr_map: wgpu::TextureView) {
+        self.irradiance_map.take();
+        self.irradiance_map.set(irr_map).ok();
+        self.bind_group.take();
+    }
     pub fn get_position(&self) -> Vec3 {
         self.position
     }
@@ -111,12 +126,14 @@ impl Camera {
             Projection::None => Mat4::IDENTITY,
         };
         self.matrix = projection * view;
+        self.view_mat = view;
     }
     fn get_info(&self) -> CameraInfo {
         CameraInfo {
             view_projection: self.matrix,
+            view: self.view_mat,
             camera_pos: self.position,
-            padding: 0.0,
+            aspect: self.aspect,
         }
     }
     fn get_buffer(&self, device: &wgpu::Device) -> &wgpu::Buffer {
@@ -126,6 +143,54 @@ impl Camera {
                 size: std::mem::size_of::<CameraInfo>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 label: Some("Camera matrix buffer"),
+            })
+        })
+    }
+    fn get_skybox(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> &wgpu::TextureView {
+        self.skybox.get_or_init(|| {
+            device.create_texture_with_data(
+                queue,
+                &wgpu::TextureDescriptor {
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 6,
+                    },
+                    label: Some("Default Skybox"),
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    dimension: wgpu::TextureDimension::D2,
+                    sample_count: 1,
+                    mip_level_count: 1,
+                },
+                bytemuck::cast_slice::<[u8; 4], u8>(&[[255; 4]; 6])
+            ).create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::Cube),
+                ..Default::default()
+            })
+        })
+    }
+    pub fn get_irradiance(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> &wgpu::TextureView {
+        self.irradiance_map.get_or_init(|| {
+            device.create_texture_with_data(
+                queue,
+                &wgpu::TextureDescriptor {
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 6,
+                    },
+                    label: Some("Default Skybox"),
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    dimension: wgpu::TextureDimension::D2,
+                    sample_count: 1,
+                    mip_level_count: 1,
+                },
+                bytemuck::cast_slice::<[u8; 4], u8>(&[[30; 4]; 6])
+            ).create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::Cube),
+                ..Default::default()
             })
         })
     }
@@ -147,19 +212,13 @@ impl Camera {
     pub(in crate::systems::graphics) fn get_bind_group(
         &self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
     ) -> &wgpu::BindGroup {
         self.bind_group.get_or_init(|| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: self.get_bind_group_layout(device),
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: self.get_buffer(device),
-                        offset: 0,
-                        size: None,
-                    }),
-                }],
-                label: Some("Camera bind group"),
+            create_bind_group!(device, &self.get_bind_group_layout(device), "Camera Bind Group": {
+                0 | Buffer(buffer: (self.get_buffer(device))),
+                1 | TextureView(self.get_skybox(device, queue)),
+                2 | TextureView(self.get_irradiance(device, queue))
             })
         })
     }
@@ -169,18 +228,10 @@ impl Camera {
         device: &wgpu::Device,
     ) -> &wgpu::BindGroupLayout {
         self.bind_group_layout.get_or_init(|| {
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-                label: Some("Camera bind group layout"),
+            create_bind_group_layout!(device, "Camera Bind Group Layout": {
+                0 => VERTEX, FRAGMENT | Buffer(type: Uniform),
+                1 => FRAGMENT | Texture(view_dim: Cube, sample: FloatFilterable),
+                2 => FRAGMENT | Texture(view_dim: Cube, sample: FloatFilterable),
             })
         })
     }
@@ -197,10 +248,13 @@ impl Default for Camera {
             near: 0.1,
             far: 100.0,
             matrix: Mat4::IDENTITY,
+            view_mat: Mat4::IDENTITY,
             dirty: true,
             buffer: OnceCell::new(),
             bind_group: OnceCell::new(),
             bind_group_layout: OnceCell::new(),
+            skybox: OnceCell::new(),
+            irradiance_map: OnceCell::new(),
         };
         cam.recompute_matrix();
         cam

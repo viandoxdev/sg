@@ -4,5 +4,6 @@ resolver = "2"
 members = [
 	"sg",
 	"ecs",
-	"ecs_macros"
+	"ecs_macros",
+	"rmanage",
 ]

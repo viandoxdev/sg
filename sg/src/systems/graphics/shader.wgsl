@@ -47,8 +47,9 @@ struct SpotLights {
 }
 struct CameraInfo {
     view_proj: mat4x4<f32>,
-    @size(16)
+    view: mat4x4<f32>,
     pos: vec3<f32>,
+    aspect: f32,
 }
 
 @group(0) @binding(0)
@@ -71,6 +72,10 @@ var<uniform> p_lights: PointLights;
 var<uniform> s_lights: SpotLights;
 @group(1) @binding(0)
 var<uniform> cam: CameraInfo;
+@group(1) @binding(1)
+var skybox: texture_cube<f32>;
+@group(1) @binding(2)
+var irr_map: texture_cube<f32>;
 
 let PI = 3.1415926535;
 
@@ -82,6 +87,10 @@ fn filmic(x: vec3<f32>) -> vec3<f32> {
 
 fn fresnel_schlick(cos_theta: f32, f0: vec3<f32>) -> vec3<f32>{
     return f0 + (1.0 - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
+}
+
+fn fresnel_schlick_roughness(cos_theta: f32, f0: vec3<f32>, roughness: f32) -> vec3<f32>{
+    return f0 + (max(vec3<f32>(1.0 - roughness), f0) - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
 }
 
 fn distribution_ggx(n: vec3<f32>, h: vec3<f32>, roughness: f32) -> f32 {
@@ -123,14 +132,13 @@ fn dir_light(light: DiretionalLight, normal: vec3<f32>, view_dir: vec3<f32>) -> 
     return diffuse;
 }
 
-fn point_light(light: PointLight, normal: vec3<f32>, albedo: vec3<f32>, metallic: f32, roughness: f32, frag_pos: vec3<f32>, view_dir: vec3<f32>) -> vec3<f32>  {
+fn point_light(light: PointLight, normal: vec3<f32>, albedo: vec3<f32>, metallic: f32, roughness: f32, frag_pos: vec3<f32>, view_dir: vec3<f32>, f0: vec3<f32>) -> vec3<f32>  {
     let light_dir = normalize(light.position - frag_pos);
     let halfway = normalize(light_dir + view_dir);
     let distance = length(light.position - frag_pos);
     let attenuation = 1.0 / (distance * distance);
     let radiance = light.color.xyz * attenuation;
     // cook-torrance
-    let f0 = mix(vec3<f32>(0.04), albedo, metallic);
     let F = fresnel_schlick(max(dot(halfway, view_dir), 0.0), f0);
     let NDF = distribution_ggx(normal, halfway, roughness);       
     let G = geometry_smith(normal, view_dir, light_dir, roughness);
@@ -141,6 +149,14 @@ fn point_light(light: PointLight, normal: vec3<f32>, albedo: vec3<f32>, metallic
     let kD = (vec3<f32>(1.0) - kS) * (1.0 - metallic);
     let ndot_l = max(dot(normal, light_dir), 0.0);        
     return (kD * albedo / PI + specular) * radiance * ndot_l;
+}
+
+fn ambiant_light(normal: vec3<f32>, view: vec3<f32>, f0: vec3<f32>, roughness: f32, albedo: vec3<f32>, ao: f32) -> vec3<f32> {
+    let kS = fresnel_schlick_roughness(max(dot(normal, view), 0.0), f0, roughness);
+    let kD = 1.0 - kS;
+    let irr = textureSample(irr_map, g_sampler, normal).xyz;
+    let diff = irr * albedo;
+    return (kD * diff) * ao;
 }
 
 @fragment
@@ -154,12 +170,19 @@ fn fs_main(v_in: VertexOutput) -> @location(0) vec4<f32> {
     let pos = textureSample(g_position, g_sampler, uv).xyz;
 
     let view_dir = normalize(cam.pos - pos);
+    let f0 = mix(vec3<f32>(0.04), albedo, metallic);
     var l = vec3<f32>(0.0);
     for(var i: u32 = 0u; i < p_lights.length; i++) {
-        l += point_light(p_lights.lights[i], normal, albedo, metallic, roughness, pos, view_dir);
+        l += point_light(p_lights.lights[i], normal, albedo, metallic, roughness, pos, view_dir, f0);
     }
-    let ambiant = vec3<f32>(0.03) * albedo * ao;
+    let ambiant = ambiant_light(normal, view_dir, f0, roughness, albedo, ao);
     var color = l + ambiant;
+    let depth = textureSample(g_depth, g_sampler, uv);
+    let background = textureSample(skybox, g_sampler, (vec4<f32>((uv.x * 2.0 - 1.0) * cam.aspect *
+    PI * 0.5, uv.y * -2.0 + 1.0, 1.0, 0.0) * cam.view).xyz).xyz;
+    if (depth >= 1.0) {
+        color = background;
+    }
     color = filmic(color);
     return vec4<f32>(color, 1.0);
 }

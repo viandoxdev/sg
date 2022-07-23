@@ -38,6 +38,14 @@ impl SingleValue {
             Self::Factor(_) => wgpu::TextureFormat::R8Unorm,
         }
     }
+    fn bytes_per_pixel(&self) -> u32 {
+        match self {
+            Self::Color(_) => 4,
+            Self::Normal(_) => 4,
+            Self::Float(_) => 4,
+            Self::Factor(_) => 1,
+        }
+    }
 }
 
 impl Hash for SingleValue {
@@ -105,8 +113,12 @@ impl PartialEq for SingleValue {
 
 impl Eq for SingleValue {}
 
+type SecondarySet<T> = SecondaryMap<T, ()>;
+
 pub struct TextureManager {
-    textures: SlotMap<TextureHandle, wgpu::TextureView>,
+    textures: SlotMap<TextureHandle, wgpu::Texture>,
+    /// All views of the textures
+    views: SecondaryMap<TextureHandle, wgpu::TextureView>,
     /// All sets existing in the TextureManager (mapped to their textures)
     sets: SlotMap<TextureSet, Vec<TextureHandle>>,
     /// The set mapped to each texture
@@ -131,6 +143,7 @@ impl TextureManager {
     pub fn new() -> Self {
         Self {
             sets: SlotMap::with_key(),
+            views: SecondaryMap::new(),
             textures_set: SecondaryMap::new(),
             textures: SlotMap::with_key(),
             cache_bind_groups: UnsafeCell::new(SecondaryMap::new()),
@@ -143,7 +156,7 @@ impl TextureManager {
 
     /// Create a new set
     pub fn add_set(&mut self) -> TextureSet {
-        self.sets.insert(vec![])
+        self.sets.insert(Vec::new())
     }
 
     pub fn add_image_texture(
@@ -185,10 +198,16 @@ impl TextureManager {
         }
     }
 
+    fn create_view(&mut self, tex: TextureHandle) -> Option<wgpu::TextureView> {
+        Some(self.textures.get(tex)?.create_view(&Default::default()))
+    }
+
     /// Add a texture to the TextureManager and assign it to a set
-    pub fn add_texture(&mut self, tex: wgpu::TextureView) -> TextureHandle {
+    pub fn add_texture(&mut self, tex: wgpu::Texture) -> TextureHandle {
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         let handle = self.textures.insert(tex);
         self.textures_set.insert(handle, Vec::new());
+        self.views.insert(handle, view);
         handle
     }
 
@@ -200,11 +219,19 @@ impl TextureManager {
     }
 
     pub fn get_view(&self, tex: TextureHandle) -> Option<&wgpu::TextureView> {
+        self.views.get(tex)
+    }
+
+    pub fn get_texture(&self, tex: TextureHandle) -> Option<&wgpu::Texture> {
         self.textures.get(tex)
     }
 
-    /// Swap the tetures of a and b, making the texture of a go to b and the texture of b go to a
+    /// Swap the textures of a and b, making the texture of a go to b and the texture of b go to a
     pub fn swap(&mut self, a: TextureHandle, b: TextureHandle) -> Result<()> {
+        if a == b {
+            return Ok(());
+        }
+
         // delete cached bind groups
         let sets = self
             .textures_set
@@ -235,13 +262,33 @@ impl TextureManager {
         } else {
             self.texture_value.remove(a);
         }
+        let [va, vb] = self.views.get_disjoint_mut([a, b]).unwrap();
+        std::mem::swap(va, vb);
         Ok(())
+    }
+    
+    pub fn get_texture_sets(&self, tex: TextureHandle) -> &[TextureSet] {
+        match self.textures_set.get(tex) {
+            Some(slice) => slice,
+            None => &[]
+        }
+    }
+    
+    pub fn remove_set(&mut self, set: TextureSet) {
+        if let Some(texs) = self.sets.remove(set) {
+            self.cache_bind_groups.get_mut().remove(set);
+            for tex in texs {
+                self.textures_set.get_mut(tex)
+                    .unwrap()
+                    .retain(|oset| *oset != set);
+            }
+        }
     }
 
     pub fn replace_texture(
         &mut self,
         tex: TextureHandle,
-        new_tex: wgpu::TextureView,
+        new_tex: wgpu::Texture,
     ) -> Result<()> {
         *self
             .textures
@@ -257,6 +304,8 @@ impl TextureManager {
             self.single_value_cache.remove(value);
             self.texture_value.remove(tex);
         }
+        let view = self.create_view(tex).unwrap();
+        self.views.insert(tex, view);
         Ok(())
     }
 
@@ -282,6 +331,10 @@ impl TextureManager {
                     },
                 ],
                 label: Some("TextureSet bind group layout"),
+            });
+            create_bind_group_layout!(device, "TexturerSet Bind Group Layout": {
+                0 => FRAGMENT | Texture(view_dim: D2, sample: FloatFilterable)[Self::TEXTURE_SET_MAX],
+                1 => FRAGMENT | Sampler(Filtering)
             })
         })
     }
@@ -320,7 +373,7 @@ impl TextureManager {
                 .expect("Attempting to build bind group for unknown set");
             let views: Vec<_> = handles
                 .iter()
-                .map(|handle| self.textures.get(*handle).unwrap())
+                .map(|handle| &self.views[*handle])
                 .collect();
 
             bindgroups.insert(
@@ -348,11 +401,12 @@ impl TextureManager {
         self.sets.get(set)?.iter().position(|a| *a == tex)
     }
 
-    pub fn remove_texture(&mut self, tex: TextureHandle) -> Result<wgpu::TextureView> {
+    pub fn remove_texture(&mut self, tex: TextureHandle) -> Result<wgpu::Texture> {
         let res = self
             .textures
             .remove(tex)
             .context("Trying to remove unknown texture.")?; // remove wgpu texture
+        self.views.remove(tex);
         for set in self.textures_set.remove(tex).unwrap() {
             let index = self
                 .sets
@@ -375,23 +429,7 @@ impl TextureManager {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         value: SingleValue,
-    ) -> wgpu::TextureView {
-        let size = wgpu::Extent3d {
-            width: 1,
-            height: 1,
-            depth_or_array_layers: 1,
-        };
-
-        let gtex = device.create_texture(&wgpu::TextureDescriptor {
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: value.format(),
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            label: Some("TextureManager texture"),
-        });
-
+    ) -> wgpu::Texture {
         let data = match value {
             SingleValue::Color(c) => {
                 let c = c.clamp(Vec4::splat(0.0), Vec4::splat(1.0));
@@ -415,48 +453,61 @@ impl TextureManager {
             SingleValue::Factor(f) => vec![(f.clamp(0.0, 1.0) * 255.0) as u8],
         };
 
-        queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: &gtex,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
+        Self::create_texture_from_bytes(
+            device,
+            queue,
             &data,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: std::num::NonZeroU32::new(data.len() as u32),
-                rows_per_image: std::num::NonZeroU32::new(1),
-            },
-            size,
-        );
-
-        gtex.create_view(&wgpu::TextureViewDescriptor::default())
+            value.format(),
+            1,
+            1,
+            wgpu::TextureUsages::TEXTURE_BINDING,
+            value.bytes_per_pixel()
+        )
     }
 
     pub fn create_texture(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         img: DynamicImage,
-    ) -> wgpu::TextureView {
+    ) -> wgpu::Texture {
         let img = img.into_rgba8();
         let dim = img.dimensions();
         log::info!("Creating texture: {dim:?}");
+        Self::create_texture_from_bytes(
+            device,
+            queue,
+            &img,
+            wgpu::TextureFormat::Rgba8Unorm,
+            dim.0,
+            dim.1,
+            wgpu::TextureUsages::TEXTURE_BINDING,
+            4,
+        )
+    }
 
+    pub fn create_texture_from_bytes(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        bytes: &[u8],
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+        usage: wgpu::TextureUsages,
+        bytes_per_pixel: u32,
+    ) -> wgpu::Texture {
         let size = wgpu::Extent3d {
-            width: dim.0,
-            height: dim.1,
+            width,
+            height,
             depth_or_array_layers: 1,
         };
 
         let gtex = device.create_texture(&wgpu::TextureDescriptor {
             size,
-            // TODO: MipMaps
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            format,
+            usage: usage | wgpu::TextureUsages::COPY_DST,
             label: Some("TextureManager texture"),
         });
 
@@ -467,22 +518,22 @@ impl TextureManager {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &img,
+            bytes,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: std::num::NonZeroU32::new(4 * dim.0),
-                rows_per_image: std::num::NonZeroU32::new(dim.1),
+                bytes_per_row: std::num::NonZeroU32::new(width * bytes_per_pixel),
+                rows_per_image: std::num::NonZeroU32::new(height),
             },
             size,
         );
 
-        gtex.create_view(&wgpu::TextureViewDescriptor::default())
+        gtex
     }
 
     pub fn create_depth_texture(
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
-    ) -> wgpu::TextureView {
+    ) -> wgpu::Texture {
         let size = wgpu::Extent3d {
             width: config.width,
             height: config.height,
@@ -497,7 +548,7 @@ impl TextureManager {
             format: Self::DEPTH_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         });
-        tex.create_view(&wgpu::TextureViewDescriptor::default())
+        tex
     }
 }
 

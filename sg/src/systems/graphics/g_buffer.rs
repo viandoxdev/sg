@@ -51,8 +51,8 @@ impl GBuffer {
         };
         [
             tex("albedo", wgpu::TextureFormat::Rgba8UnormSrgb),
-            tex("position", wgpu::TextureFormat::Rgba32Float),
-            tex("normal", wgpu::TextureFormat::Rgba32Float),
+            tex("position", wgpu::TextureFormat::Rgba16Float),
+            tex("normal", wgpu::TextureFormat::Rgba16Float),
             tex("metallic roughness ao", wgpu::TextureFormat::Rgba8Unorm),
             tex("depth", wgpu::TextureFormat::Depth32Float),
         ]
@@ -77,59 +77,28 @@ impl GBuffer {
         let dlights_offset = 0;
         let plights_offset = (16 + max_lights * 32).align(alignment);
         let slights_offset = (32 + max_lights * 64).align(alignment);
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("g buffer bindgroup"),
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(albedo_tex),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(position_tex),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(normal_tex),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(mra_tex),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(depth_tex),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        size: Some(NonZeroU64::new(16 + max_lights * 32).unwrap()),
-                        buffer: lights_buffer,
-                        offset: dlights_offset,
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        size: Some(NonZeroU64::new(16 + max_lights * 32).unwrap()),
-                        buffer: lights_buffer,
-                        offset: plights_offset,
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 8,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        size: Some(NonZeroU64::new(16 + max_lights * 48).unwrap()),
-                        buffer: lights_buffer,
-                        offset: slights_offset,
-                    }),
-                },
-            ],
+        create_bind_group!(device, layout, "GBuffer Bindgroup": {
+            0 | Sampler(sampler),
+            1 | TextureView(albedo_tex),
+            2 | TextureView(position_tex),
+            3 | TextureView(normal_tex),
+            4 | TextureView(mra_tex),
+            5 | TextureView(depth_tex),
+            6 | Buffer(
+                size: (Some(NonZeroU64::new(16 + max_lights * 32).unwrap())),
+                buffer: lights_buffer,
+                offset: dlights_offset,
+            ),
+            7 | Buffer(
+                size: (Some(NonZeroU64::new(16 + max_lights * 32).unwrap())),
+                buffer: lights_buffer,
+                offset: plights_offset,
+            ),
+            8 | Buffer(
+                size: (Some(NonZeroU64::new(16 + max_lights * 48).unwrap())),
+                buffer: lights_buffer,
+                offset: slights_offset,
+            ),
         })
     }
     fn update_bindgroup(&mut self, device: &wgpu::Device) {
@@ -210,114 +179,25 @@ impl GBuffer {
         lights: &[Light],
         max_lights: u32,
     ) -> Self {
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Gbuffer bind group layout"),
-            entries: &[
-                // Sampler
-                wgpu::BindGroupLayoutEntry {
-                    count: None,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    binding: 0,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                },
-                // albedo
-                wgpu::BindGroupLayoutEntry {
-                    count: None,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    binding: 1,
-                    ty: wgpu::BindingType::Texture {
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    },
-                },
-                // position
-                wgpu::BindGroupLayoutEntry {
-                    count: None,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    binding: 2,
-                    ty: wgpu::BindingType::Texture {
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    },
-                },
-                // normals
-                wgpu::BindGroupLayoutEntry {
-                    count: None,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    binding: 3,
-                    ty: wgpu::BindingType::Texture {
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    },
-                },
-                // metallic roughness ambiant occlusion
-                wgpu::BindGroupLayoutEntry {
-                    count: None,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    binding: 4,
-                    ty: wgpu::BindingType::Texture {
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    },
-                },
-                // depth
-                wgpu::BindGroupLayoutEntry {
-                    count: None,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    binding: 5,
-                    ty: wgpu::BindingType::Texture {
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                        sample_type: wgpu::TextureSampleType::Depth,
-                    },
-                },
-                // directional lights
-                wgpu::BindGroupLayoutEntry {
-                    count: None,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    binding: 6,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                },
-                // point lights
-                wgpu::BindGroupLayoutEntry {
-                    count: None,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    binding: 7,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                },
-                // spot lights
-                wgpu::BindGroupLayoutEntry {
-                    count: None,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    binding: 8,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                },
-            ],
+        let bind_group_layout = create_bind_group_layout!(device, "GBuffer Bind Group Layout": {
+            0 => FRAGMENT | Sampler(Filtering),
+            1 => FRAGMENT | Texture(view_dim: D2, sample: FloatFilterable),
+            2 => FRAGMENT | Texture(view_dim: D2, sample: FloatFilterable),
+            3 => FRAGMENT | Texture(view_dim: D2, sample: FloatFilterable),
+            4 => FRAGMENT | Texture(view_dim: D2, sample: FloatFilterable),
+            5 => FRAGMENT | Texture(view_dim: D2, sample: Depth),
+            6 => FRAGMENT | Buffer(type: Uniform),
+            7 => FRAGMENT | Buffer(type: Uniform),
+            8 => FRAGMENT | Buffer(type: Uniform),
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("gbuffer sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
         let [albedo_tex, position_tex, normal_tex, mra_tex, depth_tex] =

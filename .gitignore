@@ -1,4 +1,5 @@
 target
 private_key
 # for now
-*.png
+*.exr
+models

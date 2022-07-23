@@ -14,6 +14,40 @@ pub enum ShaderConstant {
     Any(String),
 }
 
+pub trait IntoShaderConstant {
+    fn into_shaderconstant(self) -> ShaderConstant;
+}
+
+impl IntoShaderConstant for ShaderConstant {
+    fn into_shaderconstant(self) -> ShaderConstant {
+        self
+    }
+}
+
+impl IntoShaderConstant for i64 {
+    fn into_shaderconstant(self) -> ShaderConstant {
+        ShaderConstant::Integer(self)
+    }
+}
+
+impl IntoShaderConstant for f64 {
+    fn into_shaderconstant(self) -> ShaderConstant {
+        ShaderConstant::Float(self)
+    }
+}
+
+impl IntoShaderConstant for bool {
+    fn into_shaderconstant(self) -> ShaderConstant {
+        ShaderConstant::Bool(self)
+    }
+}
+
+impl IntoShaderConstant for String {
+    fn into_shaderconstant(self) -> ShaderConstant {
+        ShaderConstant::Any(self)
+    }
+}
+
 impl ToString for ShaderConstant {
     fn to_string(&self) -> String {
         match self {
@@ -52,8 +86,8 @@ impl<'a> Shader {
             constants: HashMap::new(),
         }
     }
-    pub fn set(&mut self, key: &'static str, value: ShaderConstant) {
-        self.constants.insert(key, value);
+    pub fn set(&mut self, key: &'static str, value: impl IntoShaderConstant) {
+        self.constants.insert(key, value.into_shaderconstant());
     }
     pub fn set_integer(&mut self, key: &'static str, value: i64) {
         self.set(key, ShaderConstant::Integer(value));
@@ -126,17 +160,17 @@ impl<'a> Shader {
     }
 }
 
-pub struct Pipeline {
+pub struct Pipeline<P> {
     layout: wgpu::PipelineLayout,
     build: Box<
-        dyn Fn(&wgpu::Device, &wgpu::PipelineLayout, &wgpu::ShaderModule) -> wgpu::RenderPipeline
+        dyn Fn(&wgpu::Device, &wgpu::PipelineLayout, &wgpu::ShaderModule) -> P
             + Send,
     >,
-    pub pipeline: wgpu::RenderPipeline,
+    pub pipeline: P,
     pub shader: Shader,
 }
 
-impl Pipeline {
+impl<P> Pipeline<P> {
     pub fn new<F>(
         device: &wgpu::Device,
         layout: wgpu::PipelineLayout,
@@ -144,7 +178,7 @@ impl Pipeline {
         build: F,
     ) -> Self
     where
-        F: Fn(&wgpu::Device, &wgpu::PipelineLayout, &wgpu::ShaderModule) -> wgpu::RenderPipeline
+        F: Fn(&wgpu::Device, &wgpu::PipelineLayout, &wgpu::ShaderModule) -> P
             + 'static
             + Send,
     {
@@ -162,3 +196,6 @@ impl Pipeline {
         self.pipeline = (self.build)(device, &self.layout, &self.shader.module(device));
     }
 }
+
+pub type RenderPipeline = Pipeline<wgpu::RenderPipeline>;
+pub type ComputePipeline = Pipeline<wgpu::ComputePipeline>;

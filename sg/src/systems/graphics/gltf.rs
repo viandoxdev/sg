@@ -137,7 +137,7 @@ impl FormatExt for Format {
     }
 }
 
-fn load_image(gfx: &mut GraphicContext, image: &mut ImageData, srgb: bool) -> wgpu::TextureView {
+fn load_image(gfx: &mut GraphicContext, image: &mut ImageData, srgb: bool) -> wgpu::Texture {
     let size = wgpu::Extent3d {
         width: image.width,
         height: image.height,
@@ -267,7 +267,7 @@ fn load_image(gfx: &mut GraphicContext, image: &mut ImageData, srgb: bool) -> wg
     );
 
     log::trace!("image loading - gpu texture created");
-    tex.create_view(&wgpu::TextureViewDescriptor::default())
+    tex
 }
 
 pub fn open<P: AsRef<Path>>(

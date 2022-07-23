@@ -1,23 +1,35 @@
 #![feature(trait_upcasting)]
 #![feature(once_cell)]
+#![feature(trace_macros)]
 #![allow(incomplete_features)]
 #![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::f32::consts::PI;
-use std::sync::Arc;
+use std::io::BufReader;
+use std::num::NonZeroU32;
+use std::ops::Deref;
+use std::sync::{Arc, Barrier, mpsc};
 
 use ecs::{Executor, World};
 use glam::{EulerRot, Quat, Vec2, Vec3, Vec4};
+use image::{GenericImageView, Rgba};
 use parking_lot::RwLock;
 use slotmap::SlotMap;
-use systems::graphics::{gltf, graphic_system, lights_system, GraphicContext, Light, PointLight};
+use systems::graphics::convolution::ConvolutionComputer;
+use systems::graphics::cubemap::CubeMapComputer;
+use systems::graphics::mesh_manager::{Mesh, Primitives};
+use systems::graphics::texture_manager::SingleValue;
+use systems::graphics::{GraphicContext, Light, PointLight, Material};
+use systems::graphics::renderer::{WorldRenderer, UIRenderer};
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, Event, KeyboardInput, ScanCode, VirtualKeyCode, WindowEvent};
+use winit::event::{ElementState, Event, KeyboardInput, ScanCode, VirtualKeyCode, WindowEvent, MouseButton};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
+use egui_winit::State as EState;
+use systems::graphics::gltf;
 
-use components::LightComponent;
+use components::{LightComponent, GraphicsComponent, TransformsComponent};
 
 mod chess;
 pub mod components;
@@ -35,6 +47,16 @@ struct InputState {
     keycodes: RwLock<HashMap<VirtualKeyCode, Input>>,
     scancodes: RwLock<HashMap<ScanCode, Input>>,
     mouse_delta: RwLock<Vec2>,
+}
+
+#[derive(Clone, Copy)]
+pub struct Grabbed(bool);
+
+impl Deref for Grabbed {
+    type Target = bool;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl InputState {
@@ -102,83 +124,172 @@ impl InputState {
 async fn run(mut world: World, mut executor: Executor) {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
-
     let mut gfx = GraphicContext::new(&window).await;
-    gfx.camera.set_position(Vec3::new(0.0, 0.0, 2.0));
-    gfx.camera.set_rotation(Quat::from_rotation_y(PI));
-    world.spawn_many(gltf::open("armor.glb", &mut gfx).expect("Error"));
+    let mut wr = WorldRenderer::new(&mut gfx);
+    let uir = UIRenderer::new(&gfx, window.scale_factor() as f32);
+    let mut estate = EState::new(&event_loop);
+    let ui = egui::Context::default();
     let inputs = Arc::new(InputState::new());
 
+    estate.set_max_texture_side(gfx.device.limits().max_texture_dimension_2d as usize);
+    estate.set_pixels_per_point(window.scale_factor() as f32);
+    wr.camera.set_position(Vec3::new(0.0, 0.0, 2.0));
+    wr.camera.set_rotation(Quat::from_rotation_y(PI));
+    //world.spawn_many(gltf::open("models/ka.glb", &mut gfx).expect("Error"));
+
+    {
+        let mut r = CubeMapComputer::new(&gfx);
+        let mut reader = image::io::Reader::with_format(
+                BufReader::new(std::fs::File::open("hdr.exr").unwrap()),
+                image::ImageFormat::OpenExr,
+            );
+        reader.no_limits();
+        let image = reader
+            .decode()
+            .unwrap()
+            .flipv()
+            .to_rgba32f();
+        let f = 4096;
+        let s = 128;
+        let t = r.render(image, &gfx, f, wgpu::TextureUsages::TEXTURE_BINDING)
+            .create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::Cube),
+                ..Default::default()
+            });
+        let c = ConvolutionComputer::new(&gfx);
+        let e = c.run(&t, s, wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC, &gfx);
+        let v = e
+            .create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::Cube),
+                ..Default::default()
+            });
+        wr.camera.set_skybox(t);
+        wr.camera.set_irradiance_map(v);
+
+        //let device = &gfx.device;
+        //let queue = &gfx.queue;
+        //let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        //    label: None,
+        //    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        //    size: s as u64 * 4 * 4 * s as u64 * 6,
+        //    mapped_at_creation: false,
+        //});
+        //let mut encoder = device.create_command_encoder(&Default::default());
+        //encoder.copy_texture_to_buffer(
+        //    e.as_image_copy(),
+        //    wgpu::ImageCopyBuffer {
+        //        buffer: &buffer,
+        //        layout: wgpu::ImageDataLayout {
+        //            offset: 0,
+        //            bytes_per_row: NonZeroU32::new(s * 4 * 4),
+        //            rows_per_image: NonZeroU32::new(s),
+        //        }
+        //    },
+        //    wgpu::Extent3d {
+        //        width: s,
+        //        height: s,
+        //        depth_or_array_layers: 6,
+        //    }
+        //);
+        //let si = queue.submit(std::iter::once(encoder.finish()));
+
+        //let (se, re) = mpsc::channel();
+
+        //    buffer.slice(..).map_async(wgpu::MapMode::Read, move |b| {
+        //        se.send(b).unwrap();
+        //    });
+
+        //device.poll(wgpu::Maintain::WaitForSubmissionIndex(si));
+
+        //re.recv().unwrap().unwrap();
+
+        //let bytes = buffer.slice(..)
+        //    .get_mapped_range()
+        //    .iter()
+        //    .copied().collect::<Vec<_>>();
+        //let floats: Vec<f32> = bytemuck::cast_slice::<_, f32>(&bytes).to_vec();
+        //let buffer = image::ImageBuffer::<Rgba<f32>, Vec<f32>>::from_raw(s, s*6, floats).unwrap();
+        //buffer.save_with_format("out.exr", image::ImageFormat::OpenExr).unwrap();
+
+        //Box::leak(Box::new(t));
+    }
+
+    let gfc = {
+        let mesh = gfx.mesh_manager.add(&gfx.device, &Mesh::new_icosphere(3));
+        let material = {
+            let albedo = gfx.texture_manager.get_or_add_single_value_texture(
+                &gfx.device,
+                &gfx.queue,
+                SingleValue::Color(Vec4::new(1.0, 0.0, 0.0, 1.0))
+            );
+            Material::new_with_values(albedo, None, 0.0, 0.8, None, &mut gfx).unwrap()
+        };
+        GraphicsComponent {
+            mesh,
+            material,
+        }
+    };
+
+    world.spawn((gfc,));
+
+    let window = Arc::new(window);
+
     executor.add_resource(gfx);
+    executor.add_resource(wr);
+    executor.add_resource(uir);
+    executor.add_resource(estate);
+    executor.add_resource(ui);
+    executor.add_resource(window.clone());
 
-    //let entity;
-
-    //{
-    //    let gfx = ecs.get_system_mut::<GraphicSystem>().unwrap();
-
-    //    let mesh = gfx.mesh_manager.add(&gfx.device, &Mesh::new_cube());
-    //    let material = {
-    //        let albedo = image::open("albedo.png").unwrap().flipv();
-    //        let albedo = gfx
-    //            .texture_manager
-    //            .add_image_texture(&gfx.device, &gfx.queue, albedo);
-    //        let norm = image::open("norm.png").unwrap().flipv();
-    //        let norm = gfx
-    //            .texture_manager
-    //            .add_image_texture(&gfx.device, &gfx.queue, norm);
-    //        let met = gfx.texture_manager.get_or_add_single_value_texture(
-    //            &gfx.device,
-    //            &gfx.queue,
-    //            SingleValue::Factor(0.0),
-    //        );
-    //        let roughness = image::open("roughness.png").unwrap().flipv();
-    //        let roughness = gfx
-    //            .texture_manager
-    //            .add_image_texture(&gfx.device, &gfx.queue, roughness);
-    //        let ao = image::open("ao.png").unwrap().flipv();
-    //        let ao = gfx
-    //            .texture_manager
-    //            .add_image_texture(&gfx.device, &gfx.queue, ao);
-    //        Material::new(albedo, Some(norm), met, roughness, Some(ao), gfx).unwrap()
-    //    };
-
-    //    let gfc = GraphicsComponent {
-    //        mesh,
-    //        material,
-    //    };
-
-    //    let mut tsm = TransformsComponent::new();
-    //    tsm.set_translation(Vec3::new(0.0, 0.0, 0.0));
-
-    //    entity = ecs.new_entity();
-    //    ecs.add_component(entity, gfc);
-    //    ecs.add_component(entity, tsm);
-    //}
-
-    let pos = [
-        Vec3::new(1.0, 1.0, 6.0),
-        Vec3::new(-1.0, 1.0, 6.0),
+    let mut colors = std::iter::empty()
+        .chain(std::iter::repeat(Vec4::new(7.0, 7.0, 7.0, 1.0)).take(8))
+        .chain(std::iter::repeat(Vec4::new(2.5, 5.0, 10.0, 1.0)).take(8))
+        .chain(std::iter::repeat(Vec4::new(15.0, 15.0, 15.0, 1.0)).take(4));
+    let lights = [
+        Vec3::new( 1.0,  1.0, 6.0),
+        Vec3::new(-1.0,  1.0, 6.0),
         Vec3::new(-1.0, -1.0, 6.0),
-        Vec3::new(1.0, -1.0, 6.0),
-        Vec3::new(1.0, 4.0, 6.0),
-        Vec3::new(-1.0, 4.0, 6.0),
-        Vec3::new(-1.0, 2.0, 6.0),
-        Vec3::new(1.0, 2.0, 6.0),
+        Vec3::new( 1.0, -1.0, 6.0),
+        Vec3::new( 1.0,  4.0, 6.0),
+        Vec3::new(-1.0,  4.0, 6.0),
+        Vec3::new(-1.0,  2.0, 6.0),
+        Vec3::new( 1.0,  2.0, 6.0),
+
+        Vec3::new( 1.0,  1.0, -10.0),
+        Vec3::new(-1.0,  1.0, -10.0),
+        Vec3::new(-1.0, -1.0, -10.0),
+        Vec3::new( 1.0, -1.0, -10.0),
+        Vec3::new( 1.0,  4.0, -10.0),
+        Vec3::new(-1.0,  4.0, -10.0),
+        Vec3::new(-1.0,  2.0, -10.0),
+        Vec3::new( 1.0,  2.0, -10.0),
+
+        Vec3::new( 5.0, 0.0, 1.0),
+        Vec3::new(-5.0, 3.0, 1.0),
+        Vec3::new(-5.0, 0.0, 1.0),
+        Vec3::new( 5.0, 3.0, 1.0),
     ];
-    let lc = Vec4::splat(27.0);
-    for pos in pos {
-        world.spawn((LightComponent::new(Light::Point(PointLight::new(pos, lc))),));
+    for pos in lights {
+        let lc = colors.next().unwrap();
+        let mut tsm = TransformsComponent::new();
+        tsm.set_translation(pos);
+        tsm.set_scale(Vec3::splat(0.5));
+        world.spawn((
+            LightComponent::new(Light::Point(PointLight::new(pos, lc))),
+            tsm,
+            gfc,
+        ));
     }
 
     executor.add_resource(0f64);
 
     let transforms = {
         let inputs = inputs.clone();
-        move |count: &mut f64, gfx: &mut GraphicContext| {
+        move |count: &mut f64, wr: &mut WorldRenderer| {
             *count += 1.0;
             let mut changed = false;
-            let mut cam_pos = gfx.camera.get_position();
-            let mut cam_rot = gfx.camera.get_rotation();
+            let mut cam_pos = wr.camera.get_position();
+            let mut cam_rot = wr.camera.get_rotation();
             let rot = {
                 let (y, _, _) = cam_rot.to_euler(EulerRot::YXZ);
                 Quat::from_euler(EulerRot::YXZ, y, 0.0, 0.0)
@@ -219,24 +330,24 @@ async fn run(mut world: World, mut executor: Executor) {
                 cam_rot = Quat::from_euler(EulerRot::YXZ, y, x, 0.0);
             }
             if changed {
-                gfx.camera.set_position(cam_pos);
-                gfx.camera.set_rotation(cam_rot);
+                wr.camera.set_position(cam_pos);
+                wr.camera.set_rotation(cam_rot);
             }
         }
     };
 
+    executor.add_resource(Grabbed(false));
+
     let schedule = executor
         .schedule()
-        .then(lights_system)
+        .then(WorldRenderer::update_lights)
+        .then(GraphicContext::render)
         .then(transforms)
-        .then(graphic_system)
         .build();
-    let mut grabbed = false;
 
     event_loop.run(move |event, _, control_flow| match event {
         Event::RedrawRequested(id) if id == window.id() => {
             executor.execute(&schedule, &mut world);
-
             let gfx = executor.get_resource_mut::<GraphicContext>().unwrap();
 
             match gfx.feedback() {
@@ -252,42 +363,61 @@ async fn run(mut world: World, mut executor: Executor) {
         Event::WindowEvent {
             window_id,
             ref event,
-        } if window_id == window.id() => match event {
-            WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
-            WindowEvent::Resized(physical_size) => executor
-                .get_resource_mut::<GraphicContext>()
-                .unwrap()
-                .resize(*physical_size),
-            WindowEvent::ScaleFactorChanged { new_inner_size, .. } => executor
-                .get_resource_mut::<GraphicContext>()
-                .unwrap()
-                .resize(**new_inner_size),
-            WindowEvent::CursorMoved { position, .. } => {
-                if grabbed {
-                    inputs.notify_mouse(*position);
-                    window.set_cursor_position(CENTER_POS).unwrap();
+        } if window_id == window.id() => {
+            match event {
+                WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                WindowEvent::Resized(physical_size) => executor
+                    .get_resource_mut::<GraphicContext>()
+                    .unwrap()
+                    .resize(*physical_size),
+                WindowEvent::ScaleFactorChanged { new_inner_size, scale_factor } => {
+                    executor
+                        .get_resource_mut::<GraphicContext>()
+                        .unwrap()
+                        .resize(**new_inner_size);
+                    executor
+                        .get_resource_mut::<EState>()
+                        .unwrap()
+                        .set_pixels_per_point(*scale_factor as f32);
+                }
+                _ => {}
+            }
+
+            if !**executor.get_resource::<Grabbed>().unwrap() {
+                let (estate, ui): (&mut EState, &egui::Context) = executor.query_resources().unwrap();
+                if estate.on_event(ui, event) {
+                    return;
+                }
+
+                if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } = event {
+                    *executor.get_resource_mut::<Grabbed>().unwrap() = Grabbed(true);
+                    window.set_cursor_visible(false);
+                    window.set_cursor_grab(true).unwrap();
+                }
+            } else {
+                if let WindowEvent::KeyboardInput { input: KeyboardInput { state: ElementState::Pressed, virtual_keycode: Some(VirtualKeyCode::Escape), .. }, .. } = event {
+                    *executor.get_resource_mut::<Grabbed>().unwrap() = Grabbed(false);
+                    window.set_cursor_visible(true);
+                    window.set_cursor_grab(false).unwrap();
+                }
+                match event {
+                    WindowEvent::CursorMoved { position, .. } => {
+                        inputs.notify_mouse(*position);
+                        window.set_cursor_position(CENTER_POS).unwrap();
+                    }
+                    WindowEvent::KeyboardInput { input, .. } => {
+                        inputs.notify(*input);
+                    }
+                    _ => {}
                 }
             }
-            WindowEvent::Focused(_) => {
-                grabbed = !grabbed;
-                window.set_cursor_visible(!grabbed);
-                window.set_cursor_grab(grabbed).unwrap();
-            }
-            WindowEvent::KeyboardInput { input, .. } => {
-                if grabbed {
-                    inputs.notify(*input);
-                }
-            }
-            _ => {}
-        },
+        }
         _ => {}
     });
 }
-// TODO: implement more hooks on systems (pre, post, init), and refractor the macros if I can
-// manage.
 
 fn main() {
-    pretty_env_logger::init();
+    env_logger::init();
 
     //let mut client = Client::new("127.0.0.1:50000").unwrap();
     //let _peer = Client::new("127.0.0.1:50001").unwrap();

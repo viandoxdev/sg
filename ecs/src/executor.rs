@@ -1,7 +1,7 @@
 use std::{
     any::{Any, TypeId},
     collections::{HashMap, HashSet},
-    sync::{atomic::AtomicU64, Arc},
+    sync::{atomic::AtomicU64, Arc}, cell::UnsafeCell,
 };
 
 use slotmap::{SecondaryMap, SlotMap};
@@ -9,7 +9,7 @@ use slotmap::{SecondaryMap, SlotMap};
 use crate::{
     system::{IntoSystem, RequirementsMappings, System},
     thread_pool::{Job, ThreadPool, Wait},
-    World,
+    World, query::ResourceQuery,
 };
 
 #[derive(Clone, Copy)]
@@ -98,7 +98,8 @@ impl Default for ExecutorId {
 /// A struct holding systems and resources
 pub struct Executor {
     id: ExecutorId,
-    resources: HashMap<TypeId, Box<dyn Resource>>,
+    // Unsafecell because of get_resource_mut_unchecked (obtains a &mut R from a &self)
+    resources: UnsafeCell<HashMap<TypeId, Box<dyn Resource>>>,
     systems: SlotMap<SystemId, System>,
     mappings: RequirementsMappings,
     thread_pool: ThreadPool<ExecutorJob>,
@@ -108,25 +109,38 @@ impl Executor {
     pub fn new() -> Self {
         Self {
             id: ExecutorId::new(),
-            resources: HashMap::new(),
+            resources: UnsafeCell::new(HashMap::new()),
             systems: SlotMap::with_key(),
             mappings: RequirementsMappings::new(),
             thread_pool: ThreadPool::new(),
         }
     }
 
+    #[inline(always)]
+    fn resources<'a>(&'a self) -> &'a HashMap<TypeId, Box<dyn Resource>> {
+        unsafe { &*self.resources.get() }
+    }
+    #[inline(always)]
+    fn resources_mut(&mut self) -> &mut HashMap<TypeId, Box<dyn Resource>> {
+        self.resources.get_mut()
+    }
+    #[inline(always)]
+    fn resources_mut_unchecked(&self) -> &mut HashMap<TypeId, Box<dyn Resource>> {
+        unsafe { &mut *self.resources.get() }
+    }
+
     pub fn add_resource<T: Resource>(&mut self, res: T) {
-        if self.resources.contains_key(&TypeId::of::<T>()) {
+        if self.resources().contains_key(&TypeId::of::<T>()) {
             panic!(
                 "Trying to add resource that is already in executor: {}",
                 std::any::type_name::<T>()
             );
         }
-        self.resources.insert(res.type_id(), Box::new(res));
+        self.resources_mut().insert(res.type_id(), Box::new(res));
     }
 
     pub fn get_resource<T: Resource>(&self) -> Option<&T> {
-        self.resources
+        self.resources()
             .get(&TypeId::of::<T>())
             // For some reason the as_ref here is absolutely necessary
             .and_then(|boxed| boxed.as_ref().as_any().downcast_ref::<T>())
@@ -140,15 +154,24 @@ impl Executor {
     pub unsafe fn get_resource_mut_unchecked<T: Resource>(&self) -> Option<&mut T> {
         #[allow(clippy::cast_ref_to_mut)]
         let s = &mut *(self as *const Self as *mut Self);
-        s.resources
+        s.resources_mut_unchecked()
             .get_mut(&TypeId::of::<T>())
             // For some reason the as_mut here is absolutely necessary
             .and_then(|boxed| boxed.as_mut().as_any_mut().downcast_mut::<T>())
     }
     pub fn get_resource_mut<T: Resource>(&mut self) -> Option<&mut T> {
-        self.resources
+        self.resources_mut()
             .get_mut(&TypeId::of::<T>())
             .and_then(|boxed| boxed.as_mut().as_any_mut().downcast_mut::<T>())
+    }
+    /// Query the executor for a tuple of (possibly mutable) references of resources. If any of the
+    /// requested resource is missing this function returns None.
+    ///
+    /// # Panics
+    ///
+    /// This panics if the query borrows a resource multiple times with at least a mutable one.
+    pub fn query_resources<'a, Q: ResourceQuery<'a>>(&'a mut self) -> Option<Q> {
+        Q::fetch(self)
     }
     /// Get a scheduler used to build a schedule
     pub fn schedule(&mut self) -> Scheduler {
@@ -469,4 +492,39 @@ pub struct Schedule {
     executor_id: ExecutorId,
     threads: Arc<Vec<Vec<Step>>>,
     waits: Arc<Vec<Wait>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn query() {
+        let mut exe = Executor::new();
+        
+        exe.add_resource(1);
+        exe.add_resource(false);
+        exe.add_resource("Test!");
+
+        let (i, b, s): (&i32, &mut bool, &&'static str) = exe.query_resources().unwrap();
+
+        assert_eq!(*i, 1);
+        assert_eq!(*s, "Test!");
+        assert_eq!(*b, false);
+
+        *b = true;
+
+        assert_eq!(*exe.get_resource::<bool>().unwrap(), true);
+    }
+
+    #[test]
+    #[should_panic]
+    fn query_aliasing() {
+        let mut exe = Executor::new();
+        
+        exe.add_resource(1);
+        exe.add_resource(false);
+        exe.add_resource("Test!");
+
+        let (_, _): (&i32, &mut i32) = exe.query_resources().unwrap();
+    }
 }

@@ -9,6 +9,7 @@ pub struct PositionComponent {
     pub z: f64,
 }
 
+#[derive(Clone, Copy)]
 pub struct GraphicsComponent {
     pub(crate) mesh: MeshHandle,
     pub(crate) material: Material,
